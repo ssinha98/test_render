@@ -13,4 +13,5 @@ def test_route():
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
-    app.run(debug=True)
+    # app.run(debug=True)
+    app.run()
