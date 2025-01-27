@@ -3,6 +3,10 @@ from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+import PyPDF2
+from PIL import Image
+import io
+import base64
 
 load_dotenv()
 
@@ -44,6 +48,57 @@ def check_api_key_usage():
     if api_call_count > 3 and not user_api_key:
         return False
     return True
+
+# Code for handling files
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def process_file(file, file_type):
+    """Process different file types and return their data"""
+    if file_type == "pdf":
+        pdf_reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        return text
+    
+    elif file_type == "image":
+        # Convert image to base64 for easy transmission
+        img = Image.open(file)
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return img_str
+    
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    file_type = request.form.get('type')
+    
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    try:
+        # Save file
+        filename = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filename)
+        
+        # Process file based on type
+        with open(filename, 'rb') as f:
+            processed_data = process_file(f, file_type)
+        
+        return jsonify({
+            'success': True,
+            'filename': file.filename,
+            'filepath': filename,
+            'processed_data': processed_data
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/set-api-key', methods=['POST'])
 def set_api_key():
@@ -190,7 +245,6 @@ def get_count():
     """Get current API call count"""
     global api_call_count
     return jsonify({'count': api_call_count})
-
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
