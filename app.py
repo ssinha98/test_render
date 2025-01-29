@@ -7,6 +7,8 @@ import PyPDF2
 from PIL import Image
 import io
 import base64
+import pandas as pd
+
 
 load_dotenv()
 
@@ -245,6 +247,78 @@ def get_count():
     """Get current API call count"""
     global api_call_count
     return jsonify({'count': api_call_count})
+
+
+@app.route('/api/process-csv', methods=['POST'])
+def process_csv():
+    try:
+        data = request.json
+        print("Received request data:", data)
+        
+        file_path = data.get('filePath')
+        filter_criteria = data.get('filterCriteria', [])
+        
+        print(f"Processing CSV with path: {file_path}")
+        print(f"Applying filters: {filter_criteria}")
+        
+        # Read the CSV
+        df = pd.read_csv(file_path)
+        original_count = len(df)
+        print(f"Original row count: {original_count}")
+        
+        # Apply each filter
+        for criteria in filter_criteria:
+            column = criteria['column']
+            operator = criteria['operator']
+            value = criteria['value']
+            
+            print(f"Applying filter: {column} {operator} {value}")
+            
+            if operator == "equals":
+                df = df[df[column] == value]
+            elif operator == "not equals":
+                df = df[df[column] != value]
+            elif operator == "contains":
+                df = df[df[column].astype(str).str.contains(value, na=False)]
+            elif operator == "starts with":
+                df = df[df[column].astype(str).str.startswith(value, na=False)]
+            elif operator == "ends with":
+                df = df[df[column].astype(str).str.endswith(value, na=False)]
+            elif operator == "greater than":
+                df = df[pd.to_numeric(df[column], errors='coerce') > float(value)]
+            elif operator == "less than":
+                df = df[pd.to_numeric(df[column], errors='coerce') < float(value)]
+                
+            print(f"Rows remaining after filter: {len(df)}")
+
+        # Convert to different formats
+        processed_data = df.to_string()  # For prompts
+        raw_data = df.to_dict('records')  # For JSON
+        
+        print(f"Final row count: {len(df)}")
+        
+        response_data = {
+            'success': True,
+            'processedData': processed_data,
+            'rawData': raw_data,
+            'metadata': {
+                'original_row_count': original_count,
+                'filtered_row_count': len(df),
+                'columns': df.columns.tolist(),
+                'applied_filters': filter_criteria
+            }
+        }
+        print("Sending response:", response_data)
+        return jsonify(response_data)
+        
+    except Exception as e:
+        error_msg = f"Error processing CSV: {str(e)}"
+        print(error_msg)
+        return jsonify({
+            'success': False,
+            'error': error_msg
+        }), 500
+
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
