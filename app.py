@@ -8,6 +8,7 @@ from PIL import Image
 import io
 import base64
 import pandas as pd
+import csv
 
 
 load_dotenv()
@@ -156,8 +157,33 @@ def api_call_model():
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
+    save_as_csv = data.get('save_as_csv', False)
     
     result = call_model(system_prompt, user_prompt)
+    
+    if save_as_csv and result['success']:
+        # Parse response into lines (split by newlines)
+        response_lines = [line.strip() for line in result['response'].split('\n') if line.strip()]
+        
+        # Convert the response to a CSV string
+        csv_data = io.StringIO()
+        csv_writer = csv.writer(csv_data)
+        csv_writer.writerow(['Response'])  # Header
+        
+        # Write each line as a separate row
+        for line in response_lines:
+            csv_writer.writerow([line])
+        
+        # Create response with CSV file
+        output = make_response(jsonify({
+            **result,
+            'csv_content': csv_data.getvalue(),
+            'filename': 'response.csv'
+        }))
+        output.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
+        return output
+    
+    # Regular JSON response if not saving as CSV
     response = make_response(jsonify(result))
     response.set_cookie('session_active', 'true')
     return response
@@ -169,6 +195,9 @@ def api_call_model_with_source():
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
     processed_data = data.get('processed_data', '')
+
+    save_as_csv = data.get('save_as_csv', False)
+    save_as_json = data.get('save_as_json', False)
     
     # Prepend the source context to system prompt
     source_system_prompt = f"You are a helpful assistant. The user has given you the following source to use to answer questions. Please only use this source, and this source only, when helping the user. Source: {processed_data}\n\n{system_prompt}"
@@ -322,5 +351,7 @@ def process_csv():
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
+    app.run(debug=True, port=5000)
+
     # app.run(debug=True)
-    app.run()
+    # app.run()
