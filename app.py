@@ -9,6 +9,8 @@ import io
 import base64
 import pandas as pd
 import csv
+from datetime import datetime
+import requests
 
 
 load_dotenv()
@@ -348,6 +350,55 @@ def process_csv():
             'error': error_msg
         }), 500
 
+def send_checkin_email(to_email=None):
+    """Sends a check-in notification email"""
+    mailgun_api_key = os.getenv('MAILGUN_API_KEY')
+    if not mailgun_api_key:
+        print("Mailgun API key not found in environment variables")
+        return None
+        
+    today = datetime.now().strftime("%B %d")
+    try:
+        response = requests.post(
+            "https://api.mailgun.net/v3/robots.yourca.io/messages",
+            auth=("api", mailgun_api_key),
+            data={
+                "from": "Agent Check-Ins <postmaster@robots.yourca.io>",
+                "to": to_email or "sahil sinha <sahil@lytix.co>",
+                "subject": f"Agent Checkin - {today}",
+                "text": """Hey there,
+Your agent has hit a check-in and is waiting on you. This is your chance to review and tweak any details before it keeps going.
+
+Take a quick look and continue: https://notebook-mvp.vercel.app/"""
+            }
+        )
+        return response
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return None
+
+@app.route('/api/send-checkin-email', methods=['GET'])
+def checkin_email():
+    """Endpoint to trigger check-in email"""
+    # Get email from query parameters
+    email = request.args.get('email')
+    print("Email being used:", email)  # Debug print
+    
+    response = send_checkin_email(email)
+    
+    if response and response.status_code == 200:
+        return jsonify({
+            "success": True,
+            "message": "Email sent successfully",
+            "sent_to": email or "default email"
+        })
+    else:
+        return jsonify({
+            "success": False,
+            "error": "Failed to send email",
+            "status_code": response.status_code if response else None,
+            "details": response.text if response else "Failed to send email"
+        }), 500
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
