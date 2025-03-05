@@ -11,6 +11,7 @@ import pandas as pd
 import csv
 from datetime import datetime
 import requests
+from serpapi import GoogleSearch
 
 
 load_dotenv()
@@ -399,6 +400,126 @@ def checkin_email():
             "status_code": response.status_code if response else None,
             "details": response.text if response else "Failed to send email"
         }), 500
+
+def perform_google_search(query: str = None, engine_type: str = "search", topic_token: str = None, section_token: str = None, window: str = None, trend: str = None, index_market: str = None) -> dict:
+    """Performs a Google search using SerpAPI"""
+    try:
+        # Base params
+        params = {
+            "api_key": os.getenv('SERPAPI_KEY'),
+            "gl": "us",  # Location set to US
+            "hl": "en"   # Language set to English
+        }
+        
+        # Set engine type and specific parameters
+        if engine_type == "search":
+            params["engine"] = "google"
+            params["q"] = query
+        elif engine_type == "news":
+            params["engine"] = "google_news"
+            if query:
+                params["q"] = query
+            elif topic_token:
+                params["topic_token"] = topic_token
+                if section_token:
+                    params["section_token"] = section_token
+            else:
+                return {
+                    "success": False,
+                    "error": "News search requires either a query or topic token"
+                }
+        elif engine_type == "finance":
+            params["engine"] = "google_finance"
+            params["q"] = query
+            if window:
+                params["window"] = window
+        elif engine_type == "markets":
+            params["engine"] = "google_finance_markets"
+            if not trend:
+                return {
+                    "success": False,
+                    "error": "Markets search requires a trend parameter"
+                }
+            params["trend"] = trend
+            if trend == "indexes" and index_market:
+                params["index_market"] = index_market
+        else:
+            return {
+                "success": False,
+                "error": f"Unsupported engine type: {engine_type}"
+            }
+        
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        
+        # Handle different result types based on engine
+        if engine_type == "search":
+            return {
+                "success": True,
+                "results": results.get("organic_results", [])
+            }
+        elif engine_type == "news":
+            return {
+                "success": True,
+                "results": results.get("news_results", [])
+            }
+        elif engine_type == "finance":
+            return {
+                "success": True,
+                "results": results
+            }
+        elif engine_type == "markets":
+            return {
+                "success": True,
+                "results": results.get("market_trends", [])
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.route('/api/search', methods=['GET', 'POST'])
+def search():
+    """Endpoint for Google search"""
+    # Get parameters from either query string or JSON body
+    if request.method == 'POST':
+        data = request.json
+        query = data.get('query')
+        engine = data.get('engine', 'search')
+        topic_token = data.get('topic_token')
+        section_token = data.get('section_token')
+        window = data.get('window')
+        trend = data.get('trend')
+        index_market = data.get('index_market')
+    else:  # GET
+        query = request.args.get('q')
+        engine = request.args.get('engine', 'search')
+        topic_token = request.args.get('topic_token')
+        section_token = request.args.get('section_token')
+        window = request.args.get('window')
+        trend = request.args.get('trend')
+        index_market = request.args.get('index_market')
+    
+    if engine == "news" and not (query or topic_token):
+        return jsonify({
+            "success": False,
+            "error": "News search requires either a query or topic token"
+        }), 400
+    elif engine in ["search", "finance"] and not query:
+        return jsonify({
+            "success": False,
+            "error": f"{engine} requires a query"
+        }), 400
+    elif engine == "markets" and not trend:
+        return jsonify({
+            "success": False,
+            "error": "Markets search requires a trend parameter"
+        }), 400
+        
+    result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market)
+    return jsonify(result)
 
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
