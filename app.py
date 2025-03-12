@@ -197,18 +197,52 @@ def api_call_model_with_source():
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
-    processed_data = data.get('processed_data', '')
+    download_url = data.get('download_url', '')
 
-    save_as_csv = data.get('save_as_csv', False)
-    save_as_json = data.get('save_as_json', False)
-    
-    # Prepend the source context to system prompt
-    source_system_prompt = f"You are a helpful assistant. The user has given you the following source to use to answer questions. Please only use this source, and this source only, when helping the user. Source: {processed_data}\n\n{system_prompt}"
-    
-    result = call_model(source_system_prompt, user_prompt)
-    response = make_response(jsonify(result))
-    response.set_cookie('session_active', 'true')
-    return response
+    if not download_url:
+        return jsonify({
+            "success": False,
+            "error": "No download URL provided"
+        }), 400
+
+    try:
+        # Download the file content from the URL
+        response = requests.get(download_url)
+        response.raise_for_status()
+
+        # Check if it's a PDF by looking at content type or URL
+        is_pdf = ('application/pdf' in response.headers.get('Content-Type', '') or 
+                 download_url.lower().endswith('.pdf'))
+
+        if is_pdf:
+            # Read PDF content
+            pdf_file = io.BytesIO(response.content)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            processed_data = ""
+            for page in pdf_reader.pages:
+                processed_data += page.extract_text() + "\n"
+        else:
+            # Regular text content
+            processed_data = response.text
+
+        # Prepend the source context to system prompt
+        source_system_prompt = f"You are a helpful assistant. The user has given you the following source to use to answer questions. Please only use this source, and this source only, when helping the user. Source: {processed_data}\n\n{system_prompt}"
+        
+        result = call_model(source_system_prompt, user_prompt)
+        response = make_response(jsonify(result))
+        response.set_cookie('session_active', 'true')
+        return response
+
+    except requests.RequestException as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to download file: {str(e)}"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to process file: {str(e)}"
+        }), 500
 
 @app.route('/oai', methods=['GET'])
 def oai_route():
