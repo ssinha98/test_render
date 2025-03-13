@@ -555,6 +555,81 @@ def search():
     result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market)
     return jsonify(result)
 
+def send_email(to_email, subject, body):
+    """Sends an email using Mailgun API
+    
+    Args:
+        to_email (str): Recipient email address
+        subject (str): Email subject line
+        body (str): Email body text
+        
+    Returns:
+        Response object if successful, None if failed
+    """
+    mailgun_api_key = os.getenv('MAILGUN_API_KEY')
+    if not mailgun_api_key:
+        print("Mailgun API key not found in environment variables")
+        return None
+        
+    try:
+        response = requests.post(
+            "https://api.mailgun.net/v3/robots.yourca.io/messages",
+            auth=("api", mailgun_api_key),
+            data={
+                "from": "Agent Check-Ins <postmaster@robots.yourca.io>",
+                "to": to_email,
+                "subject": subject,
+                "text": body
+            }
+        )
+        return response
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return None
+
+@app.route('/api/send-email', methods=['POST', 'GET'])
+def send_email_endpoint():
+    try:
+        # Get parameters from either JSON body or URL parameters
+        if request.method == 'POST':
+            data = request.json
+            email = data.get('email')
+            subject = data.get('subject')
+            body = data.get('body')
+        else:  # GET
+            email = request.args.get('email')
+            subject = request.args.get('subject')
+            body = request.args.get('body')
+        
+        # Validate required fields
+        if not all([email, subject, body]):
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields: email, subject, and body are required"
+            }), 400
+            
+        response = send_email(email, subject, body)
+        
+        if response and response.status_code == 200:
+            return jsonify({
+                "success": True,
+                "message": "Email sent successfully",
+                "sent_to": email
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to send email",
+                "status_code": response.status_code if response else None,
+                "details": response.text if response else "Failed to send email"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 if __name__ == '__main__':
     # Change to Flase or just remove when you deploy
     app.run(debug=True, port=5000)
