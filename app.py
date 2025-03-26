@@ -32,7 +32,7 @@ app = Flask(__name__)
 #         "supports_credentials": False
 #     }
 # })
-CORS(app)
+CORS(app, origins="*", supports_credentials=False)
 
 # Verify API key is loaded
 api_key = os.getenv('OPENAI_API_KEY')
@@ -77,10 +77,14 @@ for rule in app.url_map.iter_rules():
 
 @app.route('/test', methods=['GET', 'OPTIONS'])
 def hello_world():
+    if request.method == "OPTIONS":
+        return '', 204
     return 'Hello, World!'
 
 @app.route('/test_variable', methods=['GET', 'OPTIONS'])
 def test_route():
+    if request.method == "OPTIONS":
+        return '', 204
     variable = request.args.get('variable')
     return f'variable received: {variable}'
 
@@ -130,6 +134,8 @@ def process_file(file, file_type):
     
 @app.route('/api/upload', methods=['POST', 'OPTIONS'])
 def upload_file():
+    if request.method == "OPTIONS":
+        return '', 204
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
     
@@ -160,7 +166,8 @@ def upload_file():
 
 @app.route('/api/set-api-key', methods=['POST', 'OPTIONS'])
 def set_api_key():
-    """Endpoint to set user's API key"""
+    if request.method == "OPTIONS":
+        return '', 204
     global user_api_key
     data = request.json
     user_api_key = data.get('api_key')
@@ -208,7 +215,8 @@ def call_model(system_prompt: str, user_prompt: str, sources: dict = None) -> di
     
 @app.route('/api/call-model', methods=['POST', 'OPTIONS'])
 def api_call_model():
-    """Standard LLM call without source"""
+    if request.method == "OPTIONS":
+        return '', 204
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
@@ -245,7 +253,8 @@ def api_call_model():
 
 @app.route('/api/call-model-with-source', methods=['POST', 'OPTIONS'])
 def api_call_model_with_source():
-    """LLM call with a source attached"""
+    if request.method == "OPTIONS":
+        return '', 204
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
@@ -298,6 +307,8 @@ def api_call_model_with_source():
 
 @app.route('/oai', methods=['GET', 'OPTIONS'])
 def oai_route():
+    if request.method == "OPTIONS":
+        return '', 204
     system_prompt = request.args.get('system')
     user_prompt = request.args.get('user')
     sources = request.args.get('sources')
@@ -344,7 +355,8 @@ def oai_route():
 
 @app.route('/api/check-api-key', methods=['GET', 'OPTIONS'])
 def check_api_key():
-    """Check if custom API key exists and return count"""
+    if request.method == "OPTIONS":
+        return '', 204
     global user_api_key, api_call_count
     return jsonify({
         'hasCustomKey': bool(user_api_key),
@@ -354,7 +366,8 @@ def check_api_key():
 
 @app.route('/api/remove-api-key', methods=['POST', 'OPTIONS'])
 def remove_api_key():
-    """Remove custom API key and reset count"""
+    if request.method == "OPTIONS":
+        return '', 204
     global user_api_key, api_call_count
     user_api_key = None
     api_call_count = 0
@@ -362,13 +375,16 @@ def remove_api_key():
 
 @app.route('/api/get-count', methods=['GET', 'OPTIONS'])
 def get_count():
-    """Get current API call count"""
+    if request.method == "OPTIONS":
+        return '', 204
     global api_call_count
     return jsonify({'count': api_call_count})
 
 
 @app.route('/api/process-csv', methods=['POST', 'OPTIONS'])
 def process_csv():
+    if request.method == "OPTIONS":
+        return '', 204
     try:
         data = request.json
         print("Received request data:", data)
@@ -466,8 +482,8 @@ Take a quick look and continue: https://notebook-mvp.vercel.app/"""
 
 @app.route('/api/send-checkin-email', methods=['GET', 'OPTIONS'])
 def checkin_email():
-    """Endpoint to trigger check-in email"""
-    # Get email from query parameters
+    if request.method == "OPTIONS":
+        return '', 204
     email = request.args.get('email')
     print("Email being used:", email)  # Debug print
     
@@ -568,8 +584,8 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
 
 @app.route('/api/search', methods=['GET', 'POST', 'OPTIONS'])
 def search():
-    """Endpoint for Google search"""
-    # Get parameters from either query string or JSON body
+    if request.method == "OPTIONS":
+        return '', 204
     if request.method == 'POST':
         data = request.json
         query = data.get('query')
@@ -641,6 +657,8 @@ def send_email(to_email, subject, body):
 
 @app.route('/api/send-email', methods=['POST', 'GET', 'OPTIONS'])
 def send_email_endpoint():
+    if request.method == "OPTIONS":
+        return '', 204
     try:
         # Get parameters from either JSON body or URL parameters
         if request.method == 'POST':
@@ -925,7 +943,8 @@ def process_rag_query(user_id, url, user_query, top_n=3):
 
 @app.route("/api/process_url", methods=["GET", "POST", "OPTIONS"])
 def process_url():
-    """Handles processing and retrieving URL metadata."""
+    if request.method == "OPTIONS":
+        return '', 204
     if request.method == "GET":
         # Get metadata of a stored URL
         user_id = request.args.get("user_id")
@@ -989,20 +1008,8 @@ def process_url():
 
 @app.route("/api/answer_with_rag", methods=["GET", "POST", "OPTIONS"])
 def answer_with_rag():
-    """Handles answering questions using RAG and retrieving stored content."""
-    print(f"\nReceived {request.method} request to /api/answer_with_rag")
-    print(f"Request data: {request.get_json() if request.is_json else request.args}")
-    
-    # Handle OPTIONS request for CORS preflight
     if request.method == "OPTIONS":
-        print("Handling OPTIONS request")
-        response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-        response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        response.headers.add("Access-Control-Allow-Credentials", "true")
-        return response
-
+        return '', 204
     if request.method == "GET":
         # Get stored content for a URL (debugging)
         user_id = request.args.get("user_id")
@@ -1090,6 +1097,8 @@ def answer_with_rag():
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
 def catch_all(path):
+    if request.method == "OPTIONS":
+        return '', 204
     print(f"\nCaught unhandled request: {path}")
     print(f"Method: {request.method}")
     print(f"Headers: {dict(request.headers)}")
