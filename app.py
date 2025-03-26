@@ -49,9 +49,13 @@ try:
     firebase_creds_str = os.getenv('FIREBASE_CREDENTIALS')
     if not firebase_creds_str:
         raise ValueError("FIREBASE_CREDENTIALS environment variable is not set")
-        
-    # Parse the JSON string and handle potential escaping
-    firebase_creds = json.loads(firebase_creds_str.replace('\n', '\\n'))
+    
+    # Parse the JSON string and properly handle the private key
+    firebase_creds = json.loads(firebase_creds_str)
+    
+    # Fix private key formatting
+    if isinstance(firebase_creds.get('private_key'), str):
+        firebase_creds['private_key'] = firebase_creds['private_key'].replace('\\n', '\n')
     
     cred = credentials.Certificate(firebase_creds)
     firebase_app = initialize_app(cred, {
@@ -60,7 +64,6 @@ try:
     db = firestore.client()
 except Exception as e:
     print(f"Firebase initialization error: {str(e)}")
-    print(f"Credentials type: {type(os.getenv('FIREBASE_CREDENTIALS'))}")
     raise
 
 # Add near the top after app initialization
@@ -1097,5 +1100,7 @@ def catch_all(path):
     }), 404
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=False, port=5000, host='0.0.0.0')
+    # app.run(debug=True, port=5000)
+    # port = int(os.getenv('PORT', 5000))
+    # app.run(host='0.0.0.0', port=port)
