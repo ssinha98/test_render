@@ -24,13 +24,12 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={
-    r"/*": {  # This will apply to all routes
-        # "origins": ["http://localhost:3000"],
+    r"/*": {  # This applies to all routes
+        "origins": "*",  # Allow all origins
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
         "expose_headers": ["Content-Type", "Authorization"],
-        "access_control_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
+        "supports_credentials": False
     }
 })
 
