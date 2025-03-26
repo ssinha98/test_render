@@ -12,12 +12,27 @@ import csv
 from datetime import datetime
 import requests
 from serpapi import GoogleSearch
-
+from firecrawl import FirecrawlApp
+from firebase_admin import credentials, firestore, storage, initialize_app
+import re
+import json
+import tiktoken
+import hashlib
+import torch
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/*": {  # This will apply to all routes
+        # "origins": ["http://localhost:3000"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type", "Authorization"],
+        "access_control_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Verify API key is loaded
 api_key = os.getenv('OPENAI_API_KEY')
@@ -28,6 +43,22 @@ if not api_key:
 api_call_count = 0
 user_api_key = None
 MAX_FREE_CALLS = 3
+
+# Initialize Firebase (add near the top after load_dotenv())
+cred = credentials.Certificate('./notebookmvp-firebase-adminsdk-fbsvc-f6a3346dfc.json')
+firebase_app = initialize_app(cred, {
+    'storageBucket': 'notebookmvp.firebasestorage.app'
+})
+db = firestore.client()
+
+# Add near the top after app initialization
+print("Available routes:", [str(rule) for rule in app.url_map.iter_rules()])
+
+# After app initialization
+print("\n=== Registered Routes ===")
+for rule in app.url_map.iter_rules():
+    print(f"Endpoint: {rule.endpoint}, Methods: {rule.methods}, URL: {rule.rule}")
+# print("======================\n")
 
 @app.route('/test')
 def hello_world():
@@ -41,6 +72,12 @@ def test_route():
 # api_key = os.getenv('OPENAI_API_KEY')
 client = OpenAI(api_key=api_key)
 
+# Initialize Firecrawl client
+firecrawl_api_key = os.getenv('FIRECRAWL_API_KEY')
+if not firecrawl_api_key:
+    raise ValueError("FIRECRAWL_API_KEY not found in environment variables")
+
+firecrawl_client = FirecrawlApp(api_key=firecrawl_api_key)
 
 def get_active_api_key():
     """Returns user API key if set, otherwise falls back to env key"""
@@ -630,9 +667,425 @@ def send_email_endpoint():
             "error": str(e)
         }), 500
 
+# website processing stuff
+# initializings and functions 
+
+# Utility Functions
+
+def scrape_website(url: str) -> str:
+    """
+    Scrapes a website using Firecrawl and returns its content as markdown.
+    """
+    try:
+        scrape_status = firecrawl_client.scrape_url(
+            url, params={'formats': ['markdown']}
+        )
+        return scrape_status.get('markdown', '')
+    except Exception as e:
+        raise Exception(f"Firecrawl error: {str(e)}")
+    
+# Function to chunk content based on tokens
+def chunk_text(text: str, max_tokens: int = 512):
+    tokenizer = tiktoken.get_encoding("cl100k_base")  # ✅ Explicitly get encoding
+    tokens = tokenizer.encode(text)
+    chunks = [tokens[i:i+max_tokens] for i in range(0, len(tokens), max_tokens)]
+    return [" ".join(tokenizer.decode(chunk)) for chunk in chunks]
+
+# Function to generate embeddings (Using OpenAI API with text-embedding-3-small)
+def get_embeddings(chunks: list) -> list:
+    """Generate embeddings for text chunks using OpenAI's `text-embedding-3-small` model."""
+    response = client.embeddings.create(
+        input=chunks,  # OpenAI now supports batch processing
+        model="text-embedding-3-small"
+    )
+    return [embedding.embedding for embedding in response.data]
+
+# Function to sanitize filenames for Firebase Storage
+def sanitize_filename(url: str) -> str:
+    """
+    Sanitizes URLs consistently for both Firestore document IDs and Storage filenames.
+    Removes http(s):// and converts special characters to underscores.
+    """
+    # Remove http:// or https:// prefix
+    url = re.sub(r'^https?://', '', url)
+    
+    # Replace slashes and other special characters with underscores
+    sanitized = re.sub(r'[^\w\-_]', '_', url)
+    
+    # Remove any duplicate underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    
+    # Remove trailing underscores
+    sanitized = sanitized.strip('_')
+    
+    return sanitized.lower()  # Convert to lowercase for consistency
+
+# Function to upload chunked data to Firebase Cloud Storage (Per User)
+def upload_to_firebase(userid, url, chunks, embeddings, filename=None):
+    """
+    Uploads chunked data + embeddings to Firebase Cloud Storage under:
+    gs://notebookmvp.firebasestorage.app/users/{userid}/{filename}.json
+
+    Args:
+        userid (str): User ID
+        url (str): URL being processed
+        chunks (list): Chunked text content
+        embeddings (list): Corresponding embeddings
+        filename (str, optional): Custom file name (if None, defaults to a hash of the URL)
+
+    Returns:
+        str: Firebase Storage file path
+    """
+    bucket = storage.bucket()  # Gets the configured bucket
+    
+    # If no filename is provided, default to a hash of the URL
+    if filename is None:
+        filename = hashlib.sha256(url.encode()).hexdigest()
+    
+    # Sanitize filename to prevent folder creation issues
+    filename = sanitize_filename(filename)
+
+    filename = f"users/{userid}/{filename}.json"  # User-specific path
+
+    blob = bucket.blob(filename)
+    data = {"url": url, "chunks": chunks, "embeddings": embeddings}
+    
+    # Upload data to Firebase Cloud Storage
+    blob.upload_from_string(json.dumps(data), content_type="application/json")
+    
+    # Return the final storage path
+    return f"gs://notebookmvp.firebasestorage.app/{filename}"
+
+def process_url(userid: str, url: str, nickname: str = None):
+    """
+    Processes a URL for a specific user:
+    - Fetches website content
+    - Chunks the content
+    - Generates embeddings
+    - Uploads result to Firebase Cloud Storage
+    - Stores metadata in Firestore under users/{uid}/files/{sanitized_url}
+    """
+    print(f"Fetching: {url}")
+    content = scrape_website(url)  # Using Firecrawl
+
+    if not content:
+        print("No content retrieved.")
+        return
+
+    print("Chunking content...")
+    chunks = chunk_text(content)
+
+    print("Generating embeddings with OpenAI `text-embedding-3-small`...")
+    embeddings = get_embeddings(chunks)
+
+    print("Uploading to Firebase...")
+    storage_path = upload_to_firebase(userid, url, chunks, embeddings, filename=nickname or sanitize_filename(url))
+
+    # **Sanitize URL to use as a Firestore document ID**
+    sanitized_url = sanitize_filename(url)
+
+    # Store metadata in Firestore
+    file_ref = db.collection("users").document(userid).collection("files").document(sanitized_url)
+    file_data = {
+        "created_at": datetime.utcnow().isoformat(),  # ✅ Now works correctly
+        "download_link": storage_path,
+        "file_type": "website",
+        "full_name": url,
+        "nickname": nickname or url,  # Default to full URL if no nickname
+        "userID": userid
+    }
+
+    # Check if the URL already exists in Firestore
+    if file_ref.get().exists:
+        file_ref.update(file_data)  # ✅ Update existing record
+        print(f"Updated metadata for {url} in Firestore.")
+    else:
+        file_ref.set(file_data)  # ✅ Create new record
+        print(f"Stored new metadata for {url} in Firestore.")
+
+    return storage_path
+
+def load_embeddings_from_firebase(download_url):
+    """
+    Downloads and loads embeddings from Firebase Storage.
+    """
+    # Extract file path from the Firebase Storage URL
+    file_path = download_url.replace("gs://notebookmvp.firebasestorage.app/", "")
+
+    bucket = storage.bucket()
+    blob = bucket.blob(file_path)
+
+    # Download the JSON data
+    json_data = blob.download_as_text()
+    data = json.loads(json_data)
+
+    return data["chunks"], data["embeddings"]  # Return text chunks & embeddings
+
+
+def get_query_embedding(query):
+    """Generate an embedding for the user's query using OpenAI."""
+    response = client.embeddings.create(
+        input=[query], model="text-embedding-3-small"
+    )
+    return response.data[0].embedding  #
+
+def cosine_similarity(vec1, vec2):
+    """Computes cosine similarity between two lists using PyTorch."""
+    tensor1 = torch.tensor(vec1)
+    tensor2 = torch.tensor(vec2)
+    
+    return torch.nn.functional.cosine_similarity(tensor1, tensor2, dim=0).item()
+
+def retrieve_top_chunks(query, chunks, stored_embeddings, top_n=3):
+    """
+    Finds the most relevant chunks based on cosine similarity with the query.
+
+    Args:
+        query (str): The user's question.
+        chunks (list): List of website text chunks.
+        stored_embeddings (list): List of stored embeddings.
+        top_n (int): Number of relevant chunks to retrieve.
+
+    Returns:
+        list: The top-N most relevant text chunks.
+    """
+    query_embedding = get_query_embedding(query)  # Get query embedding
+
+    # Compute cosine similarity manually
+    similarities = [
+        cosine_similarity(query_embedding, stored_embedding)
+        for stored_embedding in stored_embeddings
+    ]
+
+    # Get top-N most relevant chunk indices
+    top_indices = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)[:top_n]
+
+    return [chunks[i] for i in top_indices]  # Return top chunks
+
+
+def process_rag_query(user_id, url, user_query, top_n=3):
+    """
+    Looks up Firestore for a URL's stored embeddings, retrieves relevant chunks, and answers a query.
+    """
+    print("Looking up Firestore for stored embeddings...")
+
+    # **Sanitize URL to match Firestore document ID**
+    sanitized_url = sanitize_filename(url)  # ✅ Fix: Ensure Firestore lookup matches stored data
+
+    file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+    file_data = file_ref.get().to_dict()
+
+    if not file_data or "download_link" not in file_data:
+        return "No embeddings found for this URL."
+
+    download_url = file_data["download_link"]
+
+    print("Loading website data from Firebase...")
+    chunks, embeddings = load_embeddings_from_firebase(download_url)
+
+    print("Retrieving most relevant chunks...")
+    relevant_chunks = retrieve_top_chunks(user_query, chunks, embeddings, top_n)
+
+    # Construct the system message to enforce strict context usage
+    system_prompt = (
+        "You are an AI assistant that strictly answers user questions based only on the provided context.\n"
+        "Do not use any external knowledge or make assumptions. If the answer is not in the provided context, "
+        "reply with 'I don't have enough information to answer that based on the provided data.'\n\n"
+        f"Context:\n{relevant_chunks}"
+    )
+
+    print("Generating response...")
+    response = client.chat.completions.create(
+        model="gpt-4-turbo",
+        messages=[
+            {"role": "system", "content": system_prompt},  # ✅ Context is enforced in system prompt
+            {"role": "user", "content": user_query}  # ✅ User question remains separate
+        ],
+        max_tokens=300
+    )
+
+    return response.choices[0].message.content.strip()
+
+# API Endpoints
+
+@app.route("/api/process_url", methods=["GET", "POST"])
+def process_url():
+    """Handles processing and retrieving URL metadata."""
+    if request.method == "GET":
+        # Get metadata of a stored URL
+        user_id = request.args.get("user_id")
+        url = request.args.get("url")
+
+        if not user_id or not url:
+            return jsonify({"error": "Missing required parameters"}), 400
+
+        sanitized_url = sanitize_filename(url)
+        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+        file_data = file_ref.get().to_dict()
+
+        if not file_data:
+            return jsonify({"message": "No data found for this URL"}), 404
+
+        return jsonify(file_data)
+
+    elif request.method == "POST":
+        # Process and store a new URL
+        data = request.json
+        user_id = data.get("user_id")
+        url = data.get("url")
+        nickname = data.get("nickname", None)
+
+        if not user_id or not url:
+            return jsonify({"error": "Missing required parameters"}), 400
+
+        print(f"Processing URL: {url}")
+        content = scrape_website(url)
+
+        if not content:
+            return jsonify({"error": "Failed to retrieve content"}), 500
+
+        chunks = chunk_text(content)
+        embeddings = get_embeddings(chunks)
+        storage_path = upload_to_firebase(user_id, url, chunks, embeddings, filename=nickname)
+
+        sanitized_url = sanitize_filename(url)
+        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+
+        file_data = {
+            "created_at": datetime.utcnow().isoformat(),
+            "download_link": storage_path,
+            "file_type": "website",
+            "full_name": url,
+            "nickname": nickname or url,
+            "userID": user_id
+        }
+
+        if file_ref.get().exists:
+            file_ref.update(file_data)
+        else:
+            file_ref.set(file_data)
+
+        return jsonify({
+            "success": True,
+            "message": "URL processed successfully", 
+            "download_link": storage_path,
+            "content": content  # Return the scraped content directly
+        })
+
+@app.route("/api/answer_with_rag", methods=["GET", "POST", "OPTIONS"])
+def answer_with_rag():
+    """Handles answering questions using RAG and retrieving stored content."""
+    print(f"\nReceived {request.method} request to /api/answer_with_rag")
+    print(f"Request data: {request.get_json() if request.is_json else request.args}")
+    
+    # Handle OPTIONS request for CORS preflight
+    if request.method == "OPTIONS":
+        print("Handling OPTIONS request")
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response
+
+    if request.method == "GET":
+        # Get stored content for a URL (debugging)
+        user_id = request.args.get("user_id")
+        url = request.args.get("url")
+
+        if not user_id or not url:
+            return jsonify({"error": "Missing required parameters"}), 400
+
+        sanitized_url = sanitize_filename(url)
+        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+        file_data = file_ref.get().to_dict()
+
+        if not file_data:
+            return jsonify({"message": "No data found for this URL"}), 404
+
+        return jsonify(file_data)
+
+    elif request.method == "POST":
+        try:
+            data = request.json
+            user_id = data.get("user_id")
+            url = data.get("url")
+            user_query = data.get("query")
+
+            if not user_id or not url or not user_query:
+                return jsonify({"error": "Missing required parameters"}), 400
+
+            # If the URL is a storage URL, use it directly to load embeddings
+            if url.startswith("gs://"):
+                try:
+                    # Load chunks and embeddings directly from the storage URL
+                    chunks, embeddings = load_embeddings_from_firebase(url)
+                except Exception as e:
+                    print(f"Error loading from storage URL: {str(e)}")
+                    return jsonify({
+                        "success": False,
+                        "error": f"Failed to load embeddings: {str(e)}"
+                    }), 500
+            else:
+                # Original flow using Firestore document
+                sanitized_url = sanitize_filename(url)
+                file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+                file_data = file_ref.get().to_dict()
+
+                if not file_data or "download_link" not in file_data:
+                    return jsonify({
+                        "success": False,
+                        "error": "No embeddings found for this URL"
+                    }), 404
+
+                chunks, embeddings = load_embeddings_from_firebase(file_data["download_link"])
+            
+            # Get relevant chunks
+            relevant_chunks = retrieve_top_chunks(user_query, chunks, embeddings)
+
+            # Generate response using GPT-4
+            system_prompt = (
+                "You are an AI assistant that strictly answers user questions based only on the provided context.\n"
+                "Do not use any external knowledge or make assumptions. If the answer is not in the provided context, "
+                "reply with 'I don't have enough information to answer that based on the provided data.'\n\n"
+                f"Context:\n{relevant_chunks}"
+            )
+
+            response = client.chat.completions.create(
+                model="gpt-4-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_query}
+                ],
+                max_tokens=300
+            )
+            
+            return jsonify({
+                "success": True,
+                "response": response.choices[0].message.content.strip()
+            })
+
+        except Exception as e:
+            print(f"Error in answer_with_rag: {str(e)}")
+            return jsonify({
+                "success": False,
+                "error": str(e)
+            }), 500
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    print(f"\nCaught unhandled request: {path}")
+    print(f"Method: {request.method}")
+    print(f"Headers: {dict(request.headers)}")
+    return jsonify({
+        "error": "Route not found",
+        "requested_path": path,
+        "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
+    }), 404
+
 if __name__ == '__main__':
-    # Change to Flase or just remove when you deploy
-    app.run(debug=True, port=5000)
+    # app.run(debug=True, port=5000, host='127.0.0.1')
 
     # app.run(debug=True)
-    # app.run()
+    app.run()
