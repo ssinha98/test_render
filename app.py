@@ -46,7 +46,13 @@ MAX_FREE_CALLS = 3
 
 # Initialize Firebase
 try:
-    firebase_creds = json.loads(os.getenv('FIREBASE_CREDENTIALS'))
+    firebase_creds_str = os.getenv('FIREBASE_CREDENTIALS')
+    if not firebase_creds_str:
+        raise ValueError("FIREBASE_CREDENTIALS environment variable is not set")
+        
+    # Parse the JSON string and handle potential escaping
+    firebase_creds = json.loads(firebase_creds_str.replace('\n', '\\n'))
+    
     cred = credentials.Certificate(firebase_creds)
     firebase_app = initialize_app(cred, {
         'storageBucket': 'notebookmvp.firebasestorage.app'
@@ -54,6 +60,7 @@ try:
     db = firestore.client()
 except Exception as e:
     print(f"Firebase initialization error: {str(e)}")
+    print(f"Credentials type: {type(os.getenv('FIREBASE_CREDENTIALS'))}")
     raise
 
 # Add near the top after app initialization
