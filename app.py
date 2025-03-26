@@ -32,7 +32,14 @@ app = Flask(__name__)
 #         "supports_credentials": False
 #     }
 # })
-CORS(app, origins="*", supports_credentials=False)
+CORS(app) 
+# CORS(app, origins="*", supports_credentials=False)
+
+# debugging to help with CORS issues
+@app.after_request
+def after_request(response):
+    print("🔍 Response headers:", response.headers)
+    return response
 
 # Verify API key is loaded
 api_key = os.getenv('OPENAI_API_KEY')
