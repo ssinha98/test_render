@@ -44,12 +44,17 @@ api_call_count = 0
 user_api_key = None
 MAX_FREE_CALLS = 3
 
-# Initialize Firebase (add near the top after load_dotenv())
-cred = credentials.Certificate('./notebookmvp-firebase-adminsdk-fbsvc-f6a3346dfc.json')
-firebase_app = initialize_app(cred, {
-    'storageBucket': 'notebookmvp.firebasestorage.app'
-})
-db = firestore.client()
+# Initialize Firebase
+try:
+    firebase_creds = json.loads(os.getenv('FIREBASE_CREDENTIALS'))
+    cred = credentials.Certificate(firebase_creds)
+    firebase_app = initialize_app(cred, {
+        'storageBucket': 'notebookmvp.firebasestorage.app'
+    })
+    db = firestore.client()
+except Exception as e:
+    print(f"Firebase initialization error: {str(e)}")
+    raise
 
 # Add near the top after app initialization
 print("Available routes:", [str(rule) for rule in app.url_map.iter_rules()])
@@ -1085,7 +1090,5 @@ def catch_all(path):
     }), 404
 
 if __name__ == '__main__':
-    # app.run(debug=True, port=5000, host='127.0.0.1')
-
-    # app.run(debug=True)
-    app.run()
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
