@@ -23,15 +23,16 @@ import torch
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={
-    r"/*": {  # This applies to all routes
-        "origins": "*",  # Allow all origins
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "expose_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": False
-    }
-})
+# CORS(app, resources={
+#     r"/*": {  # This applies to all routes
+#         "origins": "*",  # Allow all origins
+#         "methods": ["GET", "POST", "OPTIONS"],
+#         "allow_headers": ["Content-Type", "Authorization"],
+#         "expose_headers": ["Content-Type", "Authorization"],
+#         "supports_credentials": False
+#     }
+# })
+CORS(app)
 
 # Verify API key is loaded
 api_key = os.getenv('OPENAI_API_KEY')
@@ -74,11 +75,11 @@ for rule in app.url_map.iter_rules():
     print(f"Endpoint: {rule.endpoint}, Methods: {rule.methods}, URL: {rule.rule}")
 # print("======================\n")
 
-@app.route('/test')
+@app.route('/test', methods=['GET', 'OPTIONS'])
 def hello_world():
     return 'Hello, World!'
 
-@app.route('/test_variable', methods=['GET'])
+@app.route('/test_variable', methods=['GET', 'OPTIONS'])
 def test_route():
     variable = request.args.get('variable')
     return f'variable received: {variable}'
@@ -127,7 +128,7 @@ def process_file(file, file_type):
         img_str = base64.b64encode(buffered.getvalue()).decode()
         return img_str
     
-@app.route('/api/upload', methods=['POST'])
+@app.route('/api/upload', methods=['POST', 'OPTIONS'])
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
@@ -157,7 +158,7 @@ def upload_file():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/set-api-key', methods=['POST'])
+@app.route('/api/set-api-key', methods=['POST', 'OPTIONS'])
 def set_api_key():
     """Endpoint to set user's API key"""
     global user_api_key
@@ -205,7 +206,7 @@ def call_model(system_prompt: str, user_prompt: str, sources: dict = None) -> di
             "success": False
         }
     
-@app.route('/api/call-model', methods=['POST'])
+@app.route('/api/call-model', methods=['POST', 'OPTIONS'])
 def api_call_model():
     """Standard LLM call without source"""
     data = request.json
@@ -242,7 +243,7 @@ def api_call_model():
     response.set_cookie('session_active', 'true')
     return response
 
-@app.route('/api/call-model-with-source', methods=['POST'])
+@app.route('/api/call-model-with-source', methods=['POST', 'OPTIONS'])
 def api_call_model_with_source():
     """LLM call with a source attached"""
     data = request.json
@@ -295,7 +296,7 @@ def api_call_model_with_source():
             "error": f"Failed to process file: {str(e)}"
         }), 500
 
-@app.route('/oai', methods=['GET'])
+@app.route('/oai', methods=['GET', 'OPTIONS'])
 def oai_route():
     system_prompt = request.args.get('system')
     user_prompt = request.args.get('user')
@@ -341,7 +342,7 @@ def oai_route():
             "success": False
         }
 
-@app.route('/api/check-api-key', methods=['GET'])
+@app.route('/api/check-api-key', methods=['GET', 'OPTIONS'])
 def check_api_key():
     """Check if custom API key exists and return count"""
     global user_api_key, api_call_count
@@ -351,7 +352,7 @@ def check_api_key():
         'count': api_call_count
     })
 
-@app.route('/api/remove-api-key', methods=['POST'])
+@app.route('/api/remove-api-key', methods=['POST', 'OPTIONS'])
 def remove_api_key():
     """Remove custom API key and reset count"""
     global user_api_key, api_call_count
@@ -359,14 +360,14 @@ def remove_api_key():
     api_call_count = 0
     return jsonify({'success': True})
 
-@app.route('/api/get-count', methods=['GET'])
+@app.route('/api/get-count', methods=['GET', 'OPTIONS'])
 def get_count():
     """Get current API call count"""
     global api_call_count
     return jsonify({'count': api_call_count})
 
 
-@app.route('/api/process-csv', methods=['POST'])
+@app.route('/api/process-csv', methods=['POST', 'OPTIONS'])
 def process_csv():
     try:
         data = request.json
@@ -463,7 +464,7 @@ Take a quick look and continue: https://notebook-mvp.vercel.app/"""
         print(f"Error sending email: {str(e)}")
         return None
 
-@app.route('/api/send-checkin-email', methods=['GET'])
+@app.route('/api/send-checkin-email', methods=['GET', 'OPTIONS'])
 def checkin_email():
     """Endpoint to trigger check-in email"""
     # Get email from query parameters
@@ -565,7 +566,7 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
             "error": str(e)
         }
 
-@app.route('/api/search', methods=['GET', 'POST'])
+@app.route('/api/search', methods=['GET', 'POST', 'OPTIONS'])
 def search():
     """Endpoint for Google search"""
     # Get parameters from either query string or JSON body
@@ -638,7 +639,7 @@ def send_email(to_email, subject, body):
         print(f"Error sending email: {str(e)}")
         return None
 
-@app.route('/api/send-email', methods=['POST', 'GET'])
+@app.route('/api/send-email', methods=['POST', 'GET', 'OPTIONS'])
 def send_email_endpoint():
     try:
         # Get parameters from either JSON body or URL parameters
@@ -922,7 +923,7 @@ def process_rag_query(user_id, url, user_query, top_n=3):
 
 # API Endpoints
 
-@app.route("/api/process_url", methods=["GET", "POST"])
+@app.route("/api/process_url", methods=["GET", "POST", "OPTIONS"])
 def process_url():
     """Handles processing and retrieving URL metadata."""
     if request.method == "GET":
@@ -1086,8 +1087,8 @@ def answer_with_rag():
                 "error": str(e)
             }), 500
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
+@app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
+@app.route('/<path:path>', methods=['GET', 'OPTIONS'])
 def catch_all(path):
     print(f"\nCaught unhandled request: {path}")
     print(f"Method: {request.method}")
