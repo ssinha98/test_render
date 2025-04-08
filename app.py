@@ -19,6 +19,8 @@ import json
 import tiktoken
 import hashlib
 import torch
+import contextlib
+import traceback
 
 load_dotenv()
 
@@ -1100,6 +1102,157 @@ def answer_with_rag():
                 "success": False,
                 "error": str(e)
             }), 500
+
+
+
+@app.route('/api/run_code_piston', methods=['POST', 'OPTIONS'])
+def run_code():
+    if request.method == "OPTIONS":
+        response = make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
+    
+    try:
+        data = request.json
+        code = data.get('code')
+        language = data.get('language', 'python')  # Default to Python if not specified
+        
+        if not code:
+            return jsonify({
+                "success": False,
+                "error": "No code provided"
+            }), 400
+        
+        # Set default version based on language
+        version = "3.10.0"  # Default Python version
+        
+        # Properly formatted payload for Piston
+        payload = {
+            "language": language,
+            "version": version,
+            "files": [
+                {
+                    "name": "main.py",
+                    "content": code
+                }
+            ]
+        }
+        
+        # Send to Piston
+        response = requests.post("https://emkc.org/api/v2/piston/execute", json=payload)
+        result = response.json()
+        
+        # Create response with proper headers
+        api_response = jsonify({
+            "success": True,
+            "result": result.get('run', {})
+        })
+        
+        # Add CORS headers
+        api_response.headers['Access-Control-Allow-Origin'] = '*'
+        api_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        api_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        
+        return api_response
+        
+    except Exception as e:
+        error_response = jsonify({
+            "success": False,
+            "error": str(e)
+        })
+        
+        # Add CORS headers to error response
+        error_response.headers['Access-Control-Allow-Origin'] = '*'
+        error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        
+        return error_response, 500
+
+@app.route('/api/run_code_local', methods=['POST', 'OPTIONS'])
+def run_code_local():
+    if request.method == "OPTIONS":
+        response = make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
+    
+    try:
+        data = request.json
+        code = data.get('code')
+        
+        if not code:
+            error_response = jsonify({
+                "success": False,
+                "error": "No code provided"
+            })
+            error_response.headers['Access-Control-Allow-Origin'] = '*'
+            error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+            error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            return error_response, 400
+        
+        # Set up execution environment with useful libraries
+        exec_globals = {
+            "__builtins__": __builtins__,
+            "requests": __import__("requests"),
+            "pandas": __import__("pandas"),
+            "json": __import__("json"),
+            "datetime": __import__("datetime"),
+            "os": __import__("os"),
+            "sys": __import__("sys"),
+            "io": __import__("io"),
+            "base64": __import__("base64"),
+        }
+        
+        # Capture output
+        output = io.StringIO()
+        
+        try:
+            with contextlib.redirect_stdout(output):
+                exec(code, exec_globals)
+            result = output.getvalue()
+            
+            # Create response with proper headers
+            api_response = jsonify({
+                "success": True,
+                "output": result.strip()
+            })
+            
+            # Add CORS headers
+            api_response.headers['Access-Control-Allow-Origin'] = '*'
+            api_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+            api_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            
+            return api_response
+            
+        except Exception as e:
+            error_traceback = traceback.format_exc()
+            error_response = jsonify({
+                "success": False,
+                "error": error_traceback
+            })
+            
+            # Add CORS headers to error response
+            error_response.headers['Access-Control-Allow-Origin'] = '*'
+            error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+            error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            
+            return error_response, 400
+            
+    except Exception as e:
+        error_response = jsonify({
+            "success": False,
+            "error": str(e)
+        })
+        
+        # Add CORS headers to error response
+        error_response.headers['Access-Control-Allow-Origin'] = '*'
+        error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        
+        return error_response, 500
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
