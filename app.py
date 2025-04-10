@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify, make_response, Response, send_file, after_this_request
 from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -21,6 +21,7 @@ import hashlib
 import torch
 import contextlib
 import traceback
+import time
 
 load_dotenv()
 
@@ -1204,20 +1205,34 @@ def run_code_local():
             "sys": __import__("sys"),
             "io": __import__("io"),
             "base64": __import__("base64"),
+            "xlsxwriter": __import__("xlsxwriter"),
         }
         
-        # Capture output
-        output = io.StringIO()
+        # Create a BytesIO buffer to capture output
+        output_buffer = io.BytesIO()
+        
+        # Create a custom print function that writes to our buffer
+        def custom_print(*args, **kwargs):
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            output = sep.join(str(arg) for arg in args) + end
+            output_buffer.write(output.encode('utf-8'))
+        
+        # Add our custom print to the execution globals
+        exec_globals['print'] = custom_print
         
         try:
-            with contextlib.redirect_stdout(output):
-                exec(code, exec_globals)
-            result = output.getvalue()
+            # Execute the code with our custom print function
+            exec(code, exec_globals)
+            
+            # Get the output and decode it
+            output_buffer.seek(0)
+            result = output_buffer.getvalue().decode('utf-8').strip()
             
             # Create response with proper headers
             api_response = jsonify({
                 "success": True,
-                "output": result.strip()
+                "output": result
             })
             
             # Add CORS headers
@@ -1253,6 +1268,291 @@ def run_code_local():
         error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         
         return error_response, 500
+
+
+# EXCEL AGENT STUFF BELOW
+
+# API link configuration - when deployed on Render, this will be the same URL as the app itself
+# API_LINK = 'http://localhost:5000'  # Always use the Render URL
+
+EXCEL_SYSTEM_PROMPT = """
+You are a Python code generation agent that creates Excel spreadsheets based on user instructions. You use the pandas and xlsxwriter libraries to generate .xlsx files.
+
+Your role is to translate natural language instructions into Python code that creates spreadsheets with the requested data, formatting, and charts.
+
+Your behavior:
+
+- You always import pandas and use pd.ExcelWriter(..., engine="xlsxwriter") to write Excel files.
+- If using a with block, you use: with pd.ExcelWriter(..., engine="xlsxwriter") as writer:
+- If not using a with block, you must call writer.close() at the end. Never use writer.save().
+- You always use workbook and worksheet variables to add formatting and charts.
+- You never call workbook.add_chart(chart). Only use workbook.add_chart({...}) to create a chart.
+- You always return clean, working Python code with no explanations or comments.
+- You use clear variable names and write readable, maintainable code.
+- You do not generate markdown, commentary, or error messages.
+- You only use features supported by the xlsxwriter engine.
+- You never include pivot tables or use libraries other than pandas and xlsxwriter.
+
+You understand how to apply the following formatting and visualization techniques:
+
+<Add a column chart />
+chart = workbook.add_chart({'type': 'column'})
+chart.add_series({
+    'name': 'Revenue',
+    'categories': '=Sheet1!$A$2:$A$10',
+    'values': '=Sheet1!$B$2:$B$10',
+})
+chart.set_title({'name': 'Monthly Revenue'})
+chart.set_x_axis({'name': 'Month'})
+chart.set_y_axis({'name': 'Revenue ($)'})
+chart.set_legend({'position': 'bottom'})
+worksheet.insert_chart('E2', chart)
+
+<Add a line chart />
+chart = workbook.add_chart({'type': 'line'})
+chart.add_series({
+    'name': 'Units Sold',
+    'categories': '=Sheet1!$A$2:$A$10',
+    'values': '=Sheet1!$C$2:$C$10',
+    'marker': {'type': 'circle'},
+})
+chart.set_title({'name': 'Units Sold Over Time'})
+worksheet.insert_chart('F2', chart)
+
+<Add a pie chart />
+chart = workbook.add_chart({'type': 'pie'})
+chart.add_series({
+    'name': 'Sales by Region',
+    'categories': '=Sheet1!$A$2:$A$5',
+    'values': '=Sheet1!$B$2:$B$5',
+})
+chart.set_title({'name': 'Sales Breakdown'})
+worksheet.insert_chart('E10', chart)
+
+<Format header row />
+header_format = workbook.add_format({
+    'bold': True,
+    'bg_color': '#DCE6F1',
+    'border': 1
+})
+worksheet.set_row(0, None, header_format)
+
+<Format currency columns />
+currency_format = workbook.add_format({'num_format': '$#,##0.00'})
+worksheet.set_column("C:C", 15, currency_format)
+
+<Format date columns />
+date_format = workbook.add_format({'num_format': 'yyyy-mm-dd'})
+worksheet.set_column("A:A", 15, date_format)
+
+<Set column widths />
+worksheet.set_column("A:A", 20)
+worksheet.set_column("B:B", 15)
+
+<Create multiple sheets />
+df1.to_excel(writer, sheet_name="Data", index=False)
+df2.to_excel(writer, sheet_name="Summary", index=False)
+
+<Insert image />
+worksheet.insert_image('G2', 'logo.png')
+
+<Write a formula />
+worksheet.write_formula('D2', '=B2*C2')
+
+<Write a bold, centered title />
+title_format = workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center'})
+worksheet.merge_range('A1:D1', 'Q1 Sales Summary', title_format)
+
+<Write a basic table />
+data = [['Region', 'Revenue', 'Units Sold'],
+        ['North', 1200, 30],
+        ['South', 1500, 45]]
+for row_num, row in enumerate(data):
+    worksheet.write_row(row_num, 0, row)
+
+<Highlight a cell />
+highlight_format = workbook.add_format({'bg_color': '#FFD966'})
+worksheet.write('B2', 1500, highlight_format)
+
+<Center-align text />
+center_format = workbook.add_format({'align': 'center'})
+worksheet.set_column('A:A', 20, center_format)
+
+<Freeze panes />
+worksheet.freeze_panes(1, 0)
+
+<Add autofilter />
+worksheet.autofilter('A1:D1')
+
+<Format as percent />
+percent_format = workbook.add_format({'num_format': '0.00%'})
+worksheet.set_column('E:E', 12, percent_format)
+
+You know how to combine these formatting and charting techniques in response to user requests. 
+Always return your answer as pure Python code.
+Do not include JSON, markdown, comments, explanations, or surrounding text.
+Only return raw Python code that will be executed as-is.
+Your entire response will be passed directly into a Python exec() call. If your output includes anything other than valid Python code, it will break.
+Name the final output file "output.xlsx". Make sure the output file is named "output.xlsx". It will not work if the file is named anything else.
+"""
+
+def strict_code_cleaner(text: str) -> str:
+    if text.startswith("```python") and text.endswith("```"):
+        text = "\n".join(text.strip().splitlines()[1:-1])
+    lines = text.strip().splitlines()
+    filtered = [
+        line for line in lines
+        if not line.strip().startswith(("Here", "This code", "```", "!", "It seems", "Let's"))
+    ]
+    return "\n".join(filtered).strip()
+
+def is_syntax_valid(code: str) -> tuple[bool, str | None]:
+    try:
+        compile(code, "<string>", "exec")
+        return True, None
+    except SyntaxError as e:
+        return False, f"{e.__class__.__name__}: {e.msg} (line {e.lineno})"
+
+def generate_code_from_prompt(prompt: str) -> str:
+    messages = [
+        {"role": "developer", "content": EXCEL_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt}
+    ]
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=messages
+    )
+    return strict_code_cleaner(response.choices[0].message.content)
+
+def fix_code_with_llm(code: str, error: str) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You're a Python code repair assistant. Return only valid, corrected Python code. "
+                "Do not explain, comment, include markdown, or use pip installs. "
+                "Your entire response will be executed with exec()."
+            )
+        },
+        {
+            "role": "user",
+            "content": f"Broken code:\n\n{code}\n\nError:\n\n{error}"
+        }
+    ]
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=messages
+    )
+    return strict_code_cleaner(response.choices[0].message.content)
+
+def run_code(code: str) -> dict:
+    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"  # Or remote if needed
+    response = requests.post(RUN_CODE_ENDPOINT, json={"code": code})
+    return response.json()
+
+def validate_and_clean_code(code: str, max_syntax_retries: int = 2) -> str:
+    cleaned = strict_code_cleaner(code)
+    for attempt in range(max_syntax_retries + 1):
+        is_valid, error = is_syntax_valid(cleaned)
+        if is_valid:
+            return cleaned
+        cleaned = fix_code_with_llm(cleaned, error)
+    raise ValueError("Code could not be fixed to pass Python syntax checks.")
+
+def generate_and_run_code_from_prompt(prompt: str, max_syntax_retries: int = 2, max_exec_retries: int = 2):
+    raw_code = generate_code_from_prompt(prompt)
+
+    try:
+        code = validate_and_clean_code(raw_code, max_syntax_retries)
+    except Exception as syntax_fail:
+        return {
+            "success": False,
+            "error": f"Syntax fix failed: {syntax_fail}",
+            "code": raw_code,
+            "stage": "syntax_validation"
+        }
+
+    for attempt in range(max_exec_retries + 1):
+        result = run_code(code)
+        if result.get("success"):
+            return {
+                "success": True,
+                "output": result.get("output", ""),
+                "code": code,
+                "attempts": attempt + 1
+            }
+        error = result.get("error", "Unknown error")
+        code = fix_code_with_llm(code, error)
+        try:
+            code = validate_and_clean_code(code, max_syntax_retries)
+        except Exception as recheck_fail:
+            return {
+                "success": False,
+                "error": f"Execution fix failed after retry: {recheck_fail}",
+                "code": code,
+                "stage": "exec_fix"
+            }
+
+    return {
+        "success": False,
+        "error": "Max retries exceeded during execution fixing.",
+        "code": code,
+        "stage": "final"
+    }
+
+from flask import request, jsonify, make_response
+
+@app.route('/api/excel_agent', methods=['POST', 'GET', 'OPTIONS'])
+def excel_agent():
+    if request.method == "OPTIONS":
+        return '', 204
+
+    try:
+        if request.method == 'POST':
+            data = request.json
+            prompt = data.get('prompt')
+        else:
+            prompt = request.args.get('prompt')
+
+        if not prompt:
+            return jsonify({
+                "success": False,
+                "error": "Missing required field: 'prompt' is required"
+            }), 400
+
+        result = generate_and_run_code_from_prompt(prompt)
+
+        if not result.get("success"):
+            return jsonify(result), 500
+
+        output_file = "output.xlsx"
+        if not os.path.exists(output_file):
+            return jsonify({
+                "success": False,
+                "error": f"Expected file '{output_file}' not found."
+            }), 500
+        
+        # ✅ Register the deletion to happen after response is sent
+        @after_this_request
+        def remove_file(response):
+            try:
+                os.remove(output_file)
+                print("🧹 Deleted output.xlsx after sending.")
+            except Exception as e:
+                print(f"⚠️ Failed to delete file: {e}")
+            return response
+
+        return send_file(
+            output_file,
+            as_attachment=True,
+            download_name="output.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    except Exception as e:
+        return jsonify({ "success": False, "error": str(e) }), 500
+
+
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
