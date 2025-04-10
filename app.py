@@ -26,23 +26,42 @@ import time
 load_dotenv()
 
 app = Flask(__name__)
-# CORS(app, resources={
-#     r"/*": {  # This applies to all routes
-#         "origins": "*",  # Allow all origins
-#         "methods": ["GET", "POST", "OPTIONS"],
-#         "allow_headers": ["Content-Type", "Authorization"],
-#         "expose_headers": ["Content-Type", "Authorization"],
-#         "supports_credentials": False
-#     }
-# })
-CORS(app) 
-# CORS(app, origins="*", supports_credentials=False)
 
-# debugging to help with CORS issues
+# Configure CORS with more specific settings
+CORS(app, 
+     resources={r"/*": {
+         "origins": ["http://localhost:3000", "https://notebook-mvp.vercel.app"],
+         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+         "expose_headers": ["Content-Type", "Content-Disposition"],
+         "supports_credentials": True,
+         "max_age": 86400
+     }})
+
+def add_cors_headers(response):
+    """Helper function to add CORS headers to any response"""
+    origin = request.headers.get('Origin')
+    if origin in ["http://localhost:3000", "https://notebook-mvp.vercel.app"]:
+        response.headers['Access-Control-Allow-Origin'] = origin
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    response.headers['Access-Control-Expose-Headers'] = 'Content-Type, Content-Disposition'
+    response.headers['Access-Control-Max-Age'] = '86400'
+    return response
+
 @app.after_request
 def after_request(response):
-    print("🔍 Response headers:", response.headers)
-    return response
+    """Add CORS headers to every response"""
+    return add_cors_headers(response)
+
+@app.before_request
+def handle_preflight():
+    """Global OPTIONS handler for all routes"""
+    if request.method == "OPTIONS":
+        response = make_response()
+        return add_cors_headers(response), 204
+    return None
 
 # Verify API key is loaded
 api_key = os.getenv('OPENAI_API_KEY')
@@ -145,15 +164,15 @@ def process_file(file, file_type):
 @app.route('/api/upload', methods=['POST', 'OPTIONS'])
 def upload_file():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
+        return add_cors_headers(jsonify({'error': 'No file part'})), 400
     
     file = request.files['file']
     file_type = request.form.get('type')
     
     if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+        return add_cors_headers(jsonify({'error': 'No selected file'})), 400
 
     try:
         # Save file
@@ -164,24 +183,26 @@ def upload_file():
         with open(filename, 'rb') as f:
             processed_data = process_file(f, file_type)
         
-        return jsonify({
+        response = jsonify({
             'success': True,
             'filename': file.filename,
             'filepath': filename,
             'processed_data': processed_data
         })
+        return add_cors_headers(response)
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return add_cors_headers(jsonify({'error': str(e)})), 500
 
 @app.route('/api/set-api-key', methods=['POST', 'OPTIONS'])
 def set_api_key():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     global user_api_key
     data = request.json
     user_api_key = data.get('api_key')
-    return jsonify({"success": True})
+    response = jsonify({"success": True})
+    return add_cors_headers(response)
 
 def call_model(system_prompt: str, user_prompt: str, sources: dict = None) -> dict:
     """Sends prompts to OpenAI and returns the response"""
@@ -368,11 +389,14 @@ def check_api_key():
     if request.method == "OPTIONS":
         return '', 204
     global user_api_key, api_call_count
-    return jsonify({
+    response = jsonify({
         'hasCustomKey': bool(user_api_key),
         'apiKey': user_api_key if user_api_key else '',
         'count': api_call_count
     })
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:3000'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
 
 @app.route('/api/remove-api-key', methods=['POST', 'OPTIONS'])
 def remove_api_key():
@@ -1104,81 +1128,10 @@ def answer_with_rag():
                 "error": str(e)
             }), 500
 
-
-
-@app.route('/api/run_code_piston', methods=['POST', 'OPTIONS'])
-def run_code():
-    if request.method == "OPTIONS":
-        response = make_response('', 204)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        return response
-    
-    try:
-        data = request.json
-        code = data.get('code')
-        language = data.get('language', 'python')  # Default to Python if not specified
-        
-        if not code:
-            return jsonify({
-                "success": False,
-                "error": "No code provided"
-            }), 400
-        
-        # Set default version based on language
-        version = "3.10.0"  # Default Python version
-        
-        # Properly formatted payload for Piston
-        payload = {
-            "language": language,
-            "version": version,
-            "files": [
-                {
-                    "name": "main.py",
-                    "content": code
-                }
-            ]
-        }
-        
-        # Send to Piston
-        response = requests.post("https://emkc.org/api/v2/piston/execute", json=payload)
-        result = response.json()
-        
-        # Create response with proper headers
-        api_response = jsonify({
-            "success": True,
-            "result": result.get('run', {})
-        })
-        
-        # Add CORS headers
-        api_response.headers['Access-Control-Allow-Origin'] = '*'
-        api_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        api_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        
-        return api_response
-        
-    except Exception as e:
-        error_response = jsonify({
-            "success": False,
-            "error": str(e)
-        })
-        
-        # Add CORS headers to error response
-        error_response.headers['Access-Control-Allow-Origin'] = '*'
-        error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        
-        return error_response, 500
-
 @app.route('/api/run_code_local', methods=['POST', 'OPTIONS'])
 def run_code_local():
     if request.method == "OPTIONS":
-        response = make_response('', 204)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        return response
+        return add_cors_headers(make_response()), 204
     
     try:
         data = request.json
@@ -1189,10 +1142,7 @@ def run_code_local():
                 "success": False,
                 "error": "No code provided"
             })
-            error_response.headers['Access-Control-Allow-Origin'] = '*'
-            error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-            error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-            return error_response, 400
+            return add_cors_headers(error_response), 400
         
         # Set up execution environment with useful libraries
         exec_globals = {
@@ -1234,13 +1184,7 @@ def run_code_local():
                 "success": True,
                 "output": result
             })
-            
-            # Add CORS headers
-            api_response.headers['Access-Control-Allow-Origin'] = '*'
-            api_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-            api_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-            
-            return api_response
+            return add_cors_headers(api_response)
             
         except Exception as e:
             error_traceback = traceback.format_exc()
@@ -1248,26 +1192,14 @@ def run_code_local():
                 "success": False,
                 "error": error_traceback
             })
-            
-            # Add CORS headers to error response
-            error_response.headers['Access-Control-Allow-Origin'] = '*'
-            error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-            error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-            
-            return error_response, 400
+            return add_cors_headers(error_response), 400
             
     except Exception as e:
         error_response = jsonify({
             "success": False,
             "error": str(e)
         })
-        
-        # Add CORS headers to error response
-        error_response.headers['Access-Control-Allow-Origin'] = '*'
-        error_response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        error_response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        
-        return error_response, 500
+        return add_cors_headers(error_response), 500
 
 
 # EXCEL AGENT STUFF BELOW
@@ -1406,12 +1338,14 @@ def strict_code_cleaner(text: str) -> str:
     ]
     return "\n".join(filtered).strip()
 
+
 def is_syntax_valid(code: str) -> tuple[bool, str | None]:
     try:
         compile(code, "<string>", "exec")
         return True, None
     except SyntaxError as e:
         return False, f"{e.__class__.__name__}: {e.msg} (line {e.lineno})"
+
 
 def generate_code_from_prompt(prompt: str) -> str:
     messages = [
@@ -1423,6 +1357,7 @@ def generate_code_from_prompt(prompt: str) -> str:
         messages=messages
     )
     return strict_code_cleaner(response.choices[0].message.content)
+
 
 def fix_code_with_llm(code: str, error: str) -> str:
     messages = [
@@ -1445,10 +1380,12 @@ def fix_code_with_llm(code: str, error: str) -> str:
     )
     return strict_code_cleaner(response.choices[0].message.content)
 
+
 def run_code(code: str) -> dict:
-    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"  # Or remote if needed
+    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
     response = requests.post(RUN_CODE_ENDPOINT, json={"code": code})
     return response.json()
+
 
 def validate_and_clean_code(code: str, max_syntax_retries: int = 2) -> str:
     cleaned = strict_code_cleaner(code)
@@ -1458,6 +1395,7 @@ def validate_and_clean_code(code: str, max_syntax_retries: int = 2) -> str:
             return cleaned
         cleaned = fix_code_with_llm(cleaned, error)
     raise ValueError("Code could not be fixed to pass Python syntax checks.")
+
 
 def generate_and_run_code_from_prompt(prompt: str, max_syntax_retries: int = 2, max_exec_retries: int = 2):
     raw_code = generate_code_from_prompt(prompt)
@@ -1500,7 +1438,11 @@ def generate_and_run_code_from_prompt(prompt: str, max_syntax_retries: int = 2, 
         "stage": "final"
     }
 
-from flask import request, jsonify, make_response
+
+def extract_excel_filename(code: str) -> str | None:
+    match = re.search(r"pd\.ExcelWriter\(['\"]([^'\"]+\.xlsx)['\"]", code)
+    return match.group(1) if match else None
+
 
 @app.route('/api/excel_agent', methods=['POST', 'GET', 'OPTIONS'])
 def excel_agent():
@@ -1522,22 +1464,36 @@ def excel_agent():
 
         result = generate_and_run_code_from_prompt(prompt)
 
+        # Log the generated code for debugging
+        generated_code = result.get("code", "")
+        print("📦 Final generated code:\n", generated_code)
+
         if not result.get("success"):
             return jsonify(result), 500
 
-        output_file = "output.xlsx"
-        if not os.path.exists(output_file):
+        # Extract filename from code
+        output_file = extract_excel_filename(generated_code)
+        all_xlsx = [f for f in os.listdir() if f.endswith(".xlsx")]
+        print("📁 Current working directory:", os.getcwd())
+        print("📂 Files in directory:", os.listdir())
+        print("📄 Found XLSX files:", all_xlsx)
+
+        # Fallback: use the only .xlsx file found if filename wasn't extracted
+        if not output_file and len(all_xlsx) == 1:
+            output_file = all_xlsx[0]
+
+        if not output_file or not os.path.exists(output_file):
             return jsonify({
                 "success": False,
-                "error": f"Expected file '{output_file}' not found."
+                "error": f"Expected Excel file not found. Tried: {output_file or 'No filename extracted'}"
             }), 500
-        
+
         # ✅ Register the deletion to happen after response is sent
         @after_this_request
         def remove_file(response):
             try:
                 os.remove(output_file)
-                print("🧹 Deleted output.xlsx after sending.")
+                print(f"🧹 Deleted {output_file} after sending.")
             except Exception as e:
                 print(f"⚠️ Failed to delete file: {e}")
             return response
