@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 import PyPDF2
 from PIL import Image
-import io
+import io 
 import base64
 import pandas as pd
 import csv
@@ -22,6 +22,11 @@ import torch
 import contextlib
 import traceback
 import time
+from urllib.parse import urlparse
+from instagrapi import Client
+import base64
+from io import BytesIO
+import math
 
 load_dotenv()
 
@@ -1462,17 +1467,23 @@ def excel_agent():
                 "error": "Missing required field: 'prompt' is required"
             }), 400
 
+        print("📝 Received prompt:", prompt)
+        
+        # Generate and run the code
         result = generate_and_run_code_from_prompt(prompt)
-
-        # Log the generated code for debugging
+        print("🔍 Generation result:", result)
+        
         generated_code = result.get("code", "")
-        print("📦 Final generated code:\n", generated_code)
+        print("📦 Generated code:\n", generated_code)
 
         if not result.get("success"):
+            print("❌ Code generation failed:", result.get("error"))
             return jsonify(result), 500
 
         # Extract filename from code
         output_file = extract_excel_filename(generated_code)
+        print("🔍 Looking for file:", output_file)
+        
         all_xlsx = [f for f in os.listdir() if f.endswith(".xlsx")]
         print("📁 Current working directory:", os.getcwd())
         print("📂 Files in directory:", os.listdir())
@@ -1481,14 +1492,22 @@ def excel_agent():
         # Fallback: use the only .xlsx file found if filename wasn't extracted
         if not output_file and len(all_xlsx) == 1:
             output_file = all_xlsx[0]
+            print("📌 Using fallback file:", output_file)
 
         if not output_file or not os.path.exists(output_file):
+            error_msg = f"Expected Excel file not found. Tried: {output_file or 'No filename extracted'}"
+            print("❌", error_msg)
             return jsonify({
                 "success": False,
-                "error": f"Expected Excel file not found. Tried: {output_file or 'No filename extracted'}"
+                "error": error_msg,
+                "debug_info": {
+                    "generated_code": generated_code,
+                    "directory_contents": os.listdir(),
+                    "working_directory": os.getcwd()
+                }
             }), 500
 
-        # ✅ Register the deletion to happen after response is sent
+        # Register the deletion to happen after response is sent
         @after_this_request
         def remove_file(response):
             try:
@@ -1498,6 +1517,7 @@ def excel_agent():
                 print(f"⚠️ Failed to delete file: {e}")
             return response
 
+        print(f"✅ Successfully found and sending file: {output_file}")
         return send_file(
             output_file,
             as_attachment=True,
@@ -1506,8 +1526,326 @@ def excel_agent():
         )
 
     except Exception as e:
-        return jsonify({ "success": False, "error": str(e) }), 500
+        print("❌ Unexpected error:", str(e))
+        print("📜 Traceback:", traceback.format_exc())
+        return jsonify({ 
+            "success": False, 
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
+#INSTAGRAM AGENT STUFF BELOW
+
+def ordinal(n):
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1:'st', 2:'nd', 3:'rd'}.get(n % 10, 'th')}"
+
+class SimplifiedPost:
+    def __init__(self, pk, id, taken_at_str, image_url, comment_count, like_count, play_count, has_liked, caption):
+        self.pk = pk
+        self.id = id
+        self.taken_at = taken_at_str
+        self.image_url = str(image_url)  # Ensure JSON serializable
+        self.comment_count = comment_count
+        self.like_count = like_count
+        self.play_count = play_count
+        self.has_liked = has_liked
+        self.caption = caption
+
+    def __repr__(self):
+        return f"<Post {self.id} | Likes: {self.like_count}, Comments: {self.comment_count}>"
+
+    def to_dict(self):
+        return {
+            "pk": self.pk,
+            "id": self.id,
+            "taken_at": self.taken_at,
+            "image_url": self.image_url,
+            "comment_count": self.comment_count,
+            "like_count": self.like_count,
+            "play_count": self.play_count,
+            "has_liked": self.has_liked,
+            "caption": self.caption
+        }
+
+def simplify_post(media_obj):
+    dt = media_obj.taken_at
+    taken_at_str = f"{ordinal(dt.day)} {dt.strftime('%B %Y')}"
+
+    # image_url = media_obj.thumbnail_url
+    # if not image_url and media_obj.resources:
+    #     image_url = media_obj.resources[0].thumbnail_url
+    # image_url = str(image_url) if image_url else ""
+
+    return SimplifiedPost(
+        pk=media_obj.pk,
+        id=media_obj.id,
+        taken_at_str=taken_at_str,
+        image_url=media_obj.image_url,
+        comment_count=media_obj.comment_count,
+        like_count=media_obj.like_count,
+        play_count=getattr(media_obj, "play_count", None),
+        has_liked=media_obj.has_liked,
+        caption=media_obj.caption_text or ""
+    )
+
+# def get_instagram_posts_from_url(profile_url, post_limit=20):
+#     # Extract username from URL
+#     parsed_url = urlparse(profile_url)
+#     match = re.match(r'^/?(?P<username>[\w\.]+)', parsed_url.path.strip('/'))
+#     if not match:
+#         raise ValueError("Invalid Instagram profile URL")
+#     username = match.group("username")
+# 
+#     # Authenticate with hardcoded credentials
+#     cl = Client()
+#     cl.login("sahilsinha854", "Fax94!Leg")
+# 
+#     # Get user ID and latest media
+#     user_id = cl.user_id_from_username(username)
+#     medias = cl.user_medias(user_id, post_limit)
+# 
+#     # Convert to simplified format
+#     return [simplify_post(media) for media in medias]
+
+@app.route('/api/instagram_agent', methods=['POST', 'GET', 'OPTIONS'])
+def instagram_agent():
+    if request.method == "OPTIONS":
+        return '', 204
+    
+    try:
+        # Create hardcoded posts
+        posts = [
+            SimplifiedPost(
+                pk="3603393380995525262",
+                id="3603393380995525262_2319062",
+                taken_at_str="4th April 2025",
+                image_url="https://i.imgur.com/bY1F7gU.jpeg",
+                comment_count=174,
+                like_count=1984,
+                play_count=0,
+                has_liked=False,
+                caption="Throw your coffee a party with our newest limited batch. Introducing Chobani® Coffee Creamer: Confetti Birthday Cake. It's marvelously rich, and made with real cream and only natural ingredients. Tag a friend you'd love to grab coffee and cake with."
+            ),
+        ]
+        
+        # Convert posts to dictionary format
+        posts_data = [post.to_dict() for post in posts]
+        
+        return jsonify({
+            "success": True,
+            "posts": posts_data
+        })
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+    
+# google image search stuff below
+def search_google_images(query: str, num: int = 5) -> dict:
+    """Performs a Google image search using Custom Search API"""
+    try:
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "q": query,
+            "cx": os.getenv('GOOGLE_CSE_ID'),
+            "key": os.getenv('GOOGLE_API_KEY'),
+            "searchType": "image",
+            "num": num,
+            "safe": "active"
+        }
+
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+
+        results = response.json()
+        return {
+            "success": True,
+            "results": [
+                {
+                    "url": item["link"],
+                    "title": item.get("title"),
+                    "contextLink": item.get("image", {}).get("contextLink")
+                }
+                for item in results.get("items", [])
+            ]
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# existing function you already have
+def download_image(url):
+    response = requests.get(url, stream=True, timeout=5)
+    response.raise_for_status()
+    return Image.open(BytesIO(response.content)).convert("RGB")
+
+def create_simple_image_collage(image_urls, images_per_row=3, image_size=(300, 300)):
+    images = []
+    for url in image_urls:
+        try:
+            img = download_image(url)
+            img = img.resize(image_size)
+            images.append(img)
+        except Exception as e:
+            print(f"Could not load {url}: {e}")
+
+    if not images:
+        raise Exception("No images could be loaded.")
+
+    rows = math.ceil(len(images) / images_per_row)
+    collage_width = images_per_row * image_size[0]
+    collage_height = rows * image_size[1]
+
+    collage = Image.new("RGB", (collage_width, collage_height), color=(255, 255, 255))
+
+    for idx, img in enumerate(images):
+        row = idx // images_per_row
+        col = idx % images_per_row
+        x = col * image_size[0]
+        y = row * image_size[1]
+        collage.paste(img, (x, y))
+
+    return collage
+
+def image_to_base64(image: Image.Image) -> str:
+    buffered = BytesIO()
+    image.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode()
+
+def process_image_for_llm(image_url: str) -> str:
+    """Convert image URL to base64 for LLM processing"""
+    try:
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        image_data = base64.b64encode(response.content).decode('utf-8')
+        return f"data:image/jpeg;base64,{image_data}"
+    except Exception as e:
+        print(f"Error processing image {image_url}: {e}")
+        return None
+
+def analyze_image_with_llm(image_data: str | list[str], prompt: str) -> str:
+    """Analyze image(s) using OpenAI's GPT-4 Vision"""
+    try:
+        # Handle single image vs multiple images
+        if isinstance(image_data, str):
+            image_payload = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data
+                    }
+                }
+            ]
+        else:
+            # For multiple images
+            image_payload = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": img_data
+                    }
+                }
+                for img_data in image_data
+            ]
+
+        # Add the text prompt after the image(s)
+        payload = image_payload + [{"type": "text", "text": prompt}]
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": payload
+                }
+            ],
+            max_tokens=300
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error analyzing image: {e}")
+        return f"Error analyzing image: {str(e)}"
+
+@app.route('/api/image_search', methods=['GET', 'POST', 'OPTIONS'])
+def image_search():
+    if request.method == "OPTIONS":
+        response = make_response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response, 204
+    
+    try:
+        if request.method == 'POST':
+            if not request.is_json:
+                return jsonify({
+                    "success": False,
+                    "error": "Content-Type must be application/json"
+                }), 400
+                
+            data = request.get_json(force=True)
+        else:  # GET
+            data = request.args.to_dict()
+
+        query = data.get('query')
+        num = int(data.get('num', 5))
+        make_collage = data.get('make_collage', False) or data.get('combine', False)
+        image_prompt = data.get('image_prompt')  # Only handle individual image prompts for now
+
+        if not query:
+            return jsonify({
+                "success": False,
+                "error": "Missing required parameter: 'query'"
+            }), 400
+
+        # Perform the image search
+        search_result = search_google_images(query, num)
+        
+        if not search_result.get("success"):
+            return jsonify(search_result), 500
+
+        # Process and analyze individual images if prompt is provided
+        if image_prompt:
+            processed_images = []
+            for item in search_result["results"]:
+                image_data = process_image_for_llm(item["url"])
+                if image_data:
+                    analysis = {}
+                    analysis["individual_analysis"] = analyze_image_with_llm(
+                        image_data,
+                        image_prompt
+                    )
+                    processed_images.append({
+                        "url": item["url"],
+                        "title": item.get("title"),
+                        "contextLink": item.get("contextLink"),
+                        "analysis": analysis
+                    })
+            search_result["results"] = processed_images
+
+        # Create collage if requested
+        if make_collage and search_result.get("success") and search_result.get("results"):
+            try:
+                image_urls = [img["url"] for img in search_result["results"]]
+                collage_image = create_simple_image_collage(image_urls)
+                search_result["collage"] = f"data:image/jpeg;base64,{image_to_base64(collage_image)}"
+            except Exception as e:
+                print(f"Error creating collage: {str(e)}")
+                search_result["collage_error"] = str(e)
+
+        response = jsonify(search_result)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
@@ -1523,6 +1861,7 @@ def catch_all(path):
         "requested_path": path,
         "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
     }), 404
+
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000, host='0.0.0.0')
