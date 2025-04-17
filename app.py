@@ -112,15 +112,15 @@ for rule in app.url_map.iter_rules():
 @app.route('/test', methods=['GET', 'OPTIONS'])
 def hello_world():
     if request.method == "OPTIONS":
-        return '', 204
-    return 'Hello, World!'
+        return add_cors_headers(make_response()), 204
+    return add_cors_headers(make_response('Hello, World!'))
 
 @app.route('/test_variable', methods=['GET', 'OPTIONS'])
 def test_route():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     variable = request.args.get('variable')
-    return f'variable received: {variable}'
+    return add_cors_headers(make_response(f'variable received: {variable}'))
 
 # api_key = os.getenv('OPENAI_API_KEY')
 client = OpenAI(api_key=api_key)
@@ -252,7 +252,7 @@ def call_model(system_prompt: str, user_prompt: str, sources: dict = None) -> di
 @app.route('/api/call-model', methods=['POST', 'OPTIONS'])
 def api_call_model():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
@@ -280,27 +280,27 @@ def api_call_model():
             'filename': 'response.csv'
         }))
         output.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
-        return output
+        return add_cors_headers(output)
     
     # Regular JSON response if not saving as CSV
     response = make_response(jsonify(result))
     response.set_cookie('session_active', 'true')
-    return response
+    return add_cors_headers(response)
 
 @app.route('/api/call-model-with-source', methods=['POST', 'OPTIONS'])
 def api_call_model_with_source():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     data = request.json
     system_prompt = data.get('system_prompt', '')
     user_prompt = data.get('user_prompt', '')
     download_url = data.get('download_url', '')
 
     if not download_url:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": "No download URL provided"
-        }), 400
+        })), 400
 
     try:
         # Download the file content from the URL
@@ -328,7 +328,7 @@ def api_call_model_with_source():
         result = call_model(source_system_prompt, user_prompt)
         response = make_response(jsonify(result))
         response.set_cookie('session_active', 'true')
-        return response
+        return add_cors_headers(response)
 
     except requests.RequestException as e:
         return jsonify({
@@ -344,7 +344,7 @@ def api_call_model_with_source():
 @app.route('/oai', methods=['GET', 'OPTIONS'])
 def oai_route():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     system_prompt = request.args.get('system')
     user_prompt = request.args.get('user')
     sources = request.args.get('sources')
@@ -379,10 +379,10 @@ def oai_route():
             ],
             model="gpt-4",
         )
-        return {
+        return add_cors_headers(jsonify({
             "response": response.choices[0].message.content,
             "success": True
-        }
+        }))
     except Exception as e:
         return {
             "response": str(e),
@@ -392,38 +392,36 @@ def oai_route():
 @app.route('/api/check-api-key', methods=['GET', 'OPTIONS'])
 def check_api_key():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     global user_api_key, api_call_count
     response = jsonify({
         'hasCustomKey': bool(user_api_key),
         'apiKey': user_api_key if user_api_key else '',
         'count': api_call_count
     })
-    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:3000'
-    response.headers['Access-Control-Allow-Credentials'] = 'true'
-    return response
+    return add_cors_headers(response)
 
 @app.route('/api/remove-api-key', methods=['POST', 'OPTIONS'])
 def remove_api_key():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     global user_api_key, api_call_count
     user_api_key = None
     api_call_count = 0
-    return jsonify({'success': True})
+    return add_cors_headers(jsonify({'success': True}))
 
 @app.route('/api/get-count', methods=['GET', 'OPTIONS'])
 def get_count():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     global api_call_count
-    return jsonify({'count': api_call_count})
+    return add_cors_headers(jsonify({'count': api_call_count}))
 
 
 @app.route('/api/process-csv', methods=['POST', 'OPTIONS'])
 def process_csv():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     try:
         data = request.json
         print("Received request data:", data)
@@ -482,15 +480,15 @@ def process_csv():
             }
         }
         print("Sending response:", response_data)
-        return jsonify(response_data)
+        return add_cors_headers(jsonify(response_data))
         
     except Exception as e:
         error_msg = f"Error processing CSV: {str(e)}"
         print(error_msg)
-        return jsonify({
+        return add_cors_headers(jsonify({
             'success': False,
             'error': error_msg
-        }), 500
+        })), 500
 
 def send_checkin_email(to_email=None):
     """Sends a check-in notification email"""
@@ -522,25 +520,25 @@ Take a quick look and continue: https://notebook-mvp.vercel.app/"""
 @app.route('/api/send-checkin-email', methods=['GET', 'OPTIONS'])
 def checkin_email():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     email = request.args.get('email')
     print("Email being used:", email)  # Debug print
     
     response = send_checkin_email(email)
     
     if response and response.status_code == 200:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": True,
             "message": "Email sent successfully",
             "sent_to": email or "default email"
-        })
+        }))
     else:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": "Failed to send email",
             "status_code": response.status_code if response else None,
             "details": response.text if response else "Failed to send email"
-        }), 500
+        })), 500
 
 def perform_google_search(query: str = None, engine_type: str = "search", topic_token: str = None, section_token: str = None, window: str = None, trend: str = None, index_market: str = None) -> dict:
     """Performs a Google search using SerpAPI"""
@@ -624,7 +622,7 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
 @app.route('/api/search', methods=['GET', 'POST', 'OPTIONS'])
 def search():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     if request.method == 'POST':
         data = request.json
         query = data.get('query')
@@ -644,23 +642,23 @@ def search():
         index_market = request.args.get('index_market')
     
     if engine == "news" and not (query or topic_token):
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": "News search requires either a query or topic token"
-        }), 400
+        })), 400
     elif engine in ["search", "finance"] and not query:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": f"{engine} requires a query"
-        }), 400
+        })), 400
     elif engine == "markets" and not trend:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": "Markets search requires a trend parameter"
-        }), 400
+        })), 400
         
     result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market)
-    return jsonify(result)
+    return add_cors_headers(jsonify(result))
 
 def send_email(to_email, subject, body):
     """Sends an email using Mailgun API
@@ -697,7 +695,7 @@ def send_email(to_email, subject, body):
 @app.route('/api/send-email', methods=['POST', 'GET', 'OPTIONS'])
 def send_email_endpoint():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     try:
         # Get parameters from either JSON body or URL parameters
         if request.method == 'POST':
@@ -712,32 +710,32 @@ def send_email_endpoint():
         
         # Validate required fields
         if not all([email, subject, body]):
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": False,
                 "error": "Missing required fields: email, subject, and body are required"
-            }), 400
+            })), 400
             
         response = send_email(email, subject, body)
         
         if response and response.status_code == 200:
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": True,
                 "message": "Email sent successfully",
                 "sent_to": email
-            })
+            }))
         else:
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": False,
                 "error": "Failed to send email",
                 "status_code": response.status_code if response else None,
                 "details": response.text if response else "Failed to send email"
-            }), 500
+            })), 500
             
     except Exception as e:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": str(e)
-        }), 500
+        })), 500
 
 # website processing stuff
 # initializings and functions 
@@ -983,23 +981,24 @@ def process_rag_query(user_id, url, user_query, top_n=3):
 @app.route("/api/process_url", methods=["GET", "POST", "OPTIONS"])
 def process_url():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
+    
     if request.method == "GET":
         # Get metadata of a stored URL
         user_id = request.args.get("user_id")
         url = request.args.get("url")
 
         if not user_id or not url:
-            return jsonify({"error": "Missing required parameters"}), 400
+            return add_cors_headers(jsonify({"error": "Missing required parameters"})), 400
 
         sanitized_url = sanitize_filename(url)
         file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
         file_data = file_ref.get().to_dict()
 
         if not file_data:
-            return jsonify({"message": "No data found for this URL"}), 404
+            return add_cors_headers(jsonify({"message": "No data found for this URL"})), 404
 
-        return jsonify(file_data)
+        return add_cors_headers(jsonify(file_data))
 
     elif request.method == "POST":
         # Process and store a new URL
@@ -1009,13 +1008,13 @@ def process_url():
         nickname = data.get("nickname", None)
 
         if not user_id or not url:
-            return jsonify({"error": "Missing required parameters"}), 400
+            return add_cors_headers(jsonify({"error": "Missing required parameters"})), 400
 
         print(f"Processing URL: {url}")
         content = scrape_website(url)
 
         if not content:
-            return jsonify({"error": "Failed to retrieve content"}), 500
+            return add_cors_headers(jsonify({"error": "Failed to retrieve content"})), 500
 
         chunks = chunk_text(content)
         embeddings = get_embeddings(chunks)
@@ -1038,33 +1037,38 @@ def process_url():
         else:
             file_ref.set(file_data)
 
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": True,
             "message": "URL processed successfully", 
             "download_link": storage_path,
-            "content": content  # Return the scraped content directly
-        })
+            "content": content
+        }))
 
 @app.route("/api/answer_with_rag", methods=["GET", "POST", "OPTIONS"])
 def answer_with_rag():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
+        
     if request.method == "GET":
         # Get stored content for a URL (debugging)
         user_id = request.args.get("user_id")
         url = request.args.get("url")
 
         if not user_id or not url:
-            return jsonify({"error": "Missing required parameters"}), 400
+            return add_cors_headers(jsonify({
+                "error": "Missing required parameters"
+            })), 400
 
         sanitized_url = sanitize_filename(url)
         file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
         file_data = file_ref.get().to_dict()
 
         if not file_data:
-            return jsonify({"message": "No data found for this URL"}), 404
+            return add_cors_headers(jsonify({
+                "message": "No data found for this URL"
+            })), 404
 
-        return jsonify(file_data)
+        return add_cors_headers(jsonify(file_data))
 
     elif request.method == "POST":
         try:
@@ -1074,7 +1078,9 @@ def answer_with_rag():
             user_query = data.get("query")
 
             if not user_id or not url or not user_query:
-                return jsonify({"error": "Missing required parameters"}), 400
+                return add_cors_headers(jsonify({
+                    "error": "Missing required parameters"
+                })), 400
 
             # If the URL is a storage URL, use it directly to load embeddings
             if url.startswith("gs://"):
@@ -1083,10 +1089,10 @@ def answer_with_rag():
                     chunks, embeddings = load_embeddings_from_firebase(url)
                 except Exception as e:
                     print(f"Error loading from storage URL: {str(e)}")
-                    return jsonify({
+                    return add_cors_headers(jsonify({
                         "success": False,
                         "error": f"Failed to load embeddings: {str(e)}"
-                    }), 500
+                    })), 500
             else:
                 # Original flow using Firestore document
                 sanitized_url = sanitize_filename(url)
@@ -1094,10 +1100,10 @@ def answer_with_rag():
                 file_data = file_ref.get().to_dict()
 
                 if not file_data or "download_link" not in file_data:
-                    return jsonify({
+                    return add_cors_headers(jsonify({
                         "success": False,
                         "error": "No embeddings found for this URL"
-                    }), 404
+                    })), 404
 
                 chunks, embeddings = load_embeddings_from_firebase(file_data["download_link"])
             
@@ -1121,17 +1127,17 @@ def answer_with_rag():
                 max_tokens=300
             )
             
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": True,
                 "response": response.choices[0].message.content.strip()
-            })
+            }))
 
         except Exception as e:
             print(f"Error in answer_with_rag: {str(e)}")
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": False,
                 "error": str(e)
-            }), 500
+            })), 500
 
 @app.route('/api/run_code_local', methods=['POST', 'OPTIONS'])
 def run_code_local():
@@ -1452,7 +1458,7 @@ def extract_excel_filename(code: str) -> str | None:
 @app.route('/api/excel_agent', methods=['POST', 'GET', 'OPTIONS'])
 def excel_agent():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
 
     try:
         if request.method == 'POST':
@@ -1610,7 +1616,7 @@ def simplify_post(media_obj):
 @app.route('/api/instagram_agent', methods=['POST', 'GET', 'OPTIONS'])
 def instagram_agent():
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     
     try:
         # Create hardcoded posts
@@ -1631,16 +1637,16 @@ def instagram_agent():
         # Convert posts to dictionary format
         posts_data = [post.to_dict() for post in posts]
         
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": True,
             "posts": posts_data
-        })
+        }))
             
     except Exception as e:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": str(e)
-        }), 500
+        })), 500
     
 # google image search stuff below
 def search_google_images(query: str, num: int = 5) -> dict:
@@ -1773,19 +1779,15 @@ def analyze_image_with_llm(image_data: str | list[str], prompt: str) -> str:
 @app.route('/api/image_search', methods=['GET', 'POST', 'OPTIONS'])
 def image_search():
     if request.method == "OPTIONS":
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        return response, 204
+        return add_cors_headers(make_response()), 204
     
     try:
         if request.method == 'POST':
             if not request.is_json:
-                return jsonify({
+                return add_cors_headers(jsonify({
                     "success": False,
                     "error": "Content-Type must be application/json"
-                }), 400
+                })), 400
                 
             data = request.get_json(force=True)
         else:  # GET
@@ -1838,29 +1840,28 @@ def image_search():
                 search_result["collage_error"] = str(e)
 
         response = jsonify(search_result)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+        return add_cors_headers(response)
 
     except Exception as e:
-        return jsonify({
+        return add_cors_headers(jsonify({
             "success": False,
             "error": str(e)
-        }), 500
+        })), 500
 
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
 def catch_all(path):
     if request.method == "OPTIONS":
-        return '', 204
+        return add_cors_headers(make_response()), 204
     print(f"\nCaught unhandled request: {path}")
     print(f"Method: {request.method}")
     print(f"Headers: {dict(request.headers)}")
-    return jsonify({
+    return add_cors_headers(jsonify({
         "error": "Route not found",
         "requested_path": path,
         "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
-    }), 404
+    })), 404
 
 
 if __name__ == '__main__':
