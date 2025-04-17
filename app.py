@@ -23,7 +23,7 @@ import contextlib
 import traceback
 import time
 from urllib.parse import urlparse
-from instagrapi import Client
+# from instagrapi import Client
 import base64
 from io import BytesIO
 import math
