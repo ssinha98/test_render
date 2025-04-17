@@ -1533,10 +1533,9 @@ def excel_agent():
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        # Add CORS headers to the file response
+        # Add CORS headers and expose Content-Disposition
         response = add_cors_headers(response)
-        
-        # Ensure the file download headers are preserved
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
         response.headers['Content-Disposition'] = f'attachment; filename=output.xlsx'
         
         return response
