@@ -1468,10 +1468,10 @@ def excel_agent():
             prompt = request.args.get('prompt')
 
         if not prompt:
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": False,
                 "error": "Missing required field: 'prompt' is required"
-            }), 400
+            })), 400
 
         print("📝 Received prompt:", prompt)
         
@@ -1484,7 +1484,7 @@ def excel_agent():
 
         if not result.get("success"):
             print("❌ Code generation failed:", result.get("error"))
-            return jsonify(result), 500
+            return add_cors_headers(jsonify(result)), 500
 
         # Extract filename from code
         output_file = extract_excel_filename(generated_code)
@@ -1503,7 +1503,7 @@ def excel_agent():
         if not output_file or not os.path.exists(output_file):
             error_msg = f"Expected Excel file not found. Tried: {output_file or 'No filename extracted'}"
             print("❌", error_msg)
-            return jsonify({
+            return add_cors_headers(jsonify({
                 "success": False,
                 "error": error_msg,
                 "debug_info": {
@@ -1511,7 +1511,7 @@ def excel_agent():
                     "directory_contents": os.listdir(),
                     "working_directory": os.getcwd()
                 }
-            }), 500
+            })), 500
 
         # Register the deletion to happen after response is sent
         @after_this_request
@@ -1524,21 +1524,31 @@ def excel_agent():
             return response
 
         print(f"✅ Successfully found and sending file: {output_file}")
-        return send_file(
+        
+        # Create the response with send_file
+        response = send_file(
             output_file,
             as_attachment=True,
             download_name="output.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        
+        # Add CORS headers to the file response
+        response = add_cors_headers(response)
+        
+        # Ensure the file download headers are preserved
+        response.headers['Content-Disposition'] = f'attachment; filename=output.xlsx'
+        
+        return response
 
     except Exception as e:
         print("❌ Unexpected error:", str(e))
         print("📜 Traceback:", traceback.format_exc())
-        return jsonify({ 
+        return add_cors_headers(jsonify({ 
             "success": False, 
             "error": str(e),
             "traceback": traceback.format_exc()
-        }), 500
+        })), 500
 
 #INSTAGRAM AGENT STUFF BELOW
 
