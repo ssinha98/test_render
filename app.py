@@ -1225,8 +1225,9 @@ Your role is to translate natural language instructions into Python code that cr
 
 Your behavior:
 
+# - You always use absolute paths: os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.xlsx")
 - You always import pandas and use pd.ExcelWriter(..., engine="xlsxwriter") to write Excel files.
-- If using a with block, you use: with pd.ExcelWriter(..., engine="xlsxwriter") as writer:
+- If using a with block, you use: with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
 - If not using a with block, you must call writer.close() at the end. Never use writer.save().
 - You always use workbook and worksheet variables to add formatting and charts.
 - You never call workbook.add_chart(chart). Only use workbook.add_chart({...}) to create a chart.
@@ -1393,7 +1394,8 @@ def fix_code_with_llm(code: str, error: str) -> str:
 
 
 def run_code(code: str) -> dict:
-    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
+    # RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
+    RUN_CODE_ENDPOINT = "http://localhost:5000/api/run_code_local"
     response = requests.post(RUN_CODE_ENDPOINT, json={"code": code})
     return response.json()
 
@@ -1486,29 +1488,18 @@ def excel_agent():
             print("❌ Code generation failed:", result.get("error"))
             return add_cors_headers(jsonify(result)), 500
 
-        # Extract filename from code
-        output_file = extract_excel_filename(generated_code)
-        print("🔍 Looking for file:", output_file)
-        
-        all_xlsx = [f for f in os.listdir() if f.endswith(".xlsx")]
-        print("📁 Current working directory:", os.getcwd())
-        print("📂 Files in directory:", os.listdir())
-        print("📄 Found XLSX files:", all_xlsx)
+        # Define the expected output path
+        expected_output_path = os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.xlsx")
+        print("🔍 Looking for file at:", expected_output_path)
 
-        # Fallback: use the only .xlsx file found if filename wasn't extracted
-        if not output_file and len(all_xlsx) == 1:
-            output_file = all_xlsx[0]
-            print("📌 Using fallback file:", output_file)
-
-        if not output_file or not os.path.exists(output_file):
-            error_msg = f"Expected Excel file not found. Tried: {output_file or 'No filename extracted'}"
+        if not os.path.exists(expected_output_path):
+            error_msg = f"Expected Excel file not found at: {expected_output_path}"
             print("❌", error_msg)
             return add_cors_headers(jsonify({
                 "success": False,
                 "error": error_msg,
                 "debug_info": {
                     "generated_code": generated_code,
-                    "directory_contents": os.listdir(),
                     "working_directory": os.getcwd()
                 }
             })), 500
@@ -1517,17 +1508,17 @@ def excel_agent():
         @after_this_request
         def remove_file(response):
             try:
-                os.remove(output_file)
-                print(f"🧹 Deleted {output_file} after sending.")
+                os.remove(expected_output_path)
+                print(f"🧹 Deleted {expected_output_path} after sending.")
             except Exception as e:
                 print(f"⚠️ Failed to delete file: {e}")
             return response
 
-        print(f"✅ Successfully found and sending file: {output_file}")
+        print(f"✅ Successfully found and sending file: {expected_output_path}")
         
         # Create the response with send_file
         response = send_file(
-            output_file,
+            expected_output_path,
             as_attachment=True,
             download_name="output.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1857,6 +1848,140 @@ def image_search():
             "error": str(e)
         })), 500
 
+#coffee agent stuff below
+# Load dataset globally
+# sheet_url = "https://docs.google.com/spreadsheets/d/1xA2ToifiDFcGHBRSl9nLlMl_I2KIb2JVDWF06iatFnw/export?format=csv&gid=1953223582"
+sheet_url = "https://docs.google.com/spreadsheets/d/1AxOk1qF-Q-bTqqmtTT__AcoF0yUMuHK5COaPX3Kb6tw/export?format=csv"
+df_coffee = pd.read_csv(sheet_url)
+
+@app.route("/query_coffee", methods=["GET"])
+def query_coffee():
+    user_query = request.args.get("q", default="", type=str)
+    if not user_query:
+        return jsonify({"error": "Missing required query parameter 'q'"}), 400
+
+    valid_values = {
+        "nyc_neighborhood": [
+            "East Village", "SoHo", "Flatiron District", "Gowanus", "Kips Bay",
+            "Chelsea", "NoMad", "Downtown", "Midtown", "Williamsburg",
+            "Garment District", "Hell's Kitchen", "Turtle Bay", "Boerum Hill",
+            "Greenwich Village", "South Street Seaport", "Long Island City",
+            "Bedford-Stuyvesant", "Lower East Side", "Meatpacking District",
+            "Koreatown", "Clinton Hill"
+        ],
+        "wifi": ["Yes", "Yes - limited", "Unknown", "No"],
+        "outlets": ["Unknown", "Few", "Enough", "No", "Many"],
+        "bathrooms": ["No", "Yes", "Unknown"],
+        "laptops_on_weekends": ["No", "Limited", "Yes", "Unknown"]
+    }
+
+    valid_options_str = "\n".join([f"- {col}: {', '.join(vals)}" for col, vals in valid_values.items()])
+    system_msg = (
+    "You are a helpful assistant. Based on a user query, extract structured filters to apply "
+    "to a coffee shop dataset with the following columns:\n\n"
+    f"{valid_options_str}\n\n"
+    "Translate natural phrases into structured filters using the columns and values above.\n"
+    "Use these mappings when you see common language:\n"
+    "- \"with outlets\" → filter for outlets ≠ \"No\" (i.e., value is one of: \"Few\", \"Enough\", \"Many\")\n"
+    "- \"with many outlets\" → {\"column\": \"outlets\", \"value\": \"Many\"}\n"
+    "- \"no outlets\" → {\"column\": \"outlets\", \"value\": \"No\"}\n"
+    "- \"with wifi\" → {\"column\": \"wifi\", \"value\": \"Yes\"}\n"
+    "- \"wifi with password\" → {\"column\": \"wifi\", \"value\": \"Yes - limited\"}\n"
+    "- \"no wifi\" → {\"column\": \"wifi\", \"value\": \"No\"}\n"
+    "- \"laptop friendly on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"Yes\"}\n"
+    "- \"no laptops on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"No\"}\n"
+    "- \"with bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"Yes\"}\n"
+    "- \"no bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"No\"}\n\n"
+    "You may return arrays of values if appropriate. For example:\n"
+    '{"filters": [{"column": "outlets", "value": ["Few", "Enough", "Many"]}]}\n\n'
+    "Only use values from the allowed lists. Return a JSON object with a \"filters\" array."
+)
+
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_query}
+        ],
+        temperature=0
+    )
+    content = response.choices[0].message.content
+
+    try:
+        filters = json.loads(content)["filters"]
+    except json.JSONDecodeError:
+        filters = []
+
+    # Apply hard filters
+    filtered_df = df_coffee.copy()
+    pandas_code = ["# Start with a copy of the original dataframe", "filtered_df = df_coffee.copy()"]
+    
+    for f in filters:
+        col, val = f["column"], f["value"]
+        if col in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df[col] == val]
+            pandas_code.append(f"# Filter for {col} == {val}")
+            pandas_code.append(f"filtered_df = filtered_df[filtered_df['{col}'] == '{val}']")
+
+    # Get final results
+    pandas_code.append("# Select final columns and get top 10 results")
+    pandas_code.append("locations = filtered_df[['name', 'address', 'nyc_neighborhood', 'rating', 'wifi', 'outlets', 'laptops_on_weekends']].head(10).to_dict(orient='records')")
+    
+    locations = filtered_df[["name", "address", "nyc_neighborhood", "rating", "wifi", "outlets", "laptops_on_weekends"]].head(10).to_dict(orient="records")
+
+    # Generate a follow-up question
+    follow_up_prompt = f"Given this user request: '{user_query}', what is one follow-up question I could ask to help refine or narrow down their coffee shop search?"
+    follow_up_response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant who asks one smart follow-up question to refine a coffee shop search."},
+            {"role": "user", "content": follow_up_prompt}
+        ],
+        temperature=0.7
+    )
+    follow_up_question = follow_up_response.choices[0].message.content.strip()
+
+    return jsonify({
+        "locations": locations,
+        "follow_up_question": follow_up_question,
+        "pandas_code": "\n".join(pandas_code)
+    })
+
+def apply_manual_filters(df, filters):
+    filtered_df = df.copy()
+
+    if wifi := filters.get("wifi"):
+        if isinstance(wifi, list) and wifi:
+            filtered_df = filtered_df[filtered_df["wifi"].isin(wifi)]
+
+    if outlets := filters.get("outlets"):
+        if isinstance(outlets, list) and outlets:
+            filtered_df = filtered_df[filtered_df["outlets"].isin(outlets)]
+
+    if laptops := filters.get("laptops"):
+        if isinstance(laptops, list) and laptops:
+            filtered_df = filtered_df[filtered_df["laptops_on_weekends"].isin(laptops)]
+
+    if neighborhoods := filters.get("neighborhood"):
+        if isinstance(neighborhoods, list) and neighborhoods:
+            filtered_df = filtered_df[filtered_df["nyc_neighborhood"].isin(neighborhoods)]
+
+    if rating := filters.get("rating"):
+        try:
+            rating_float = float(rating)
+            filtered_df = filtered_df[filtered_df["rating"] >= rating_float]
+        except ValueError:
+            pass
+
+    return filtered_df.reset_index(drop=True)
+
+@app.route("/apply_filters", methods=["POST"])
+def filter_endpoint():
+    filters = request.get_json()
+    filtered = apply_manual_filters(df_coffee, filters)
+
+    locations = filtered.to_dict(orient="records")
+    return jsonify({"locations": locations})
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
@@ -1871,6 +1996,58 @@ def catch_all(path):
         "requested_path": path,
         "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
     })), 404
+
+research_client = OpenAI(api_key="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", base_url="https://api.perplexity.ai")
+# Extractor function
+def extract_message_and_search_results(response):
+    message = response.choices[0].message.content
+    search_results = []
+    if hasattr(response, "search_results"):
+        search_results = response.search_results
+    return {
+        "message": message,
+        "search_results": search_results
+    }
+
+# API route
+@app.route("/ask", methods=["POST"])
+def ask():
+    data = request.get_json()
+
+    # Validate input
+    if not data or "prompt" not in data:
+        return jsonify({"error": "Missing 'prompt' in request body"}), 400
+
+    user_prompt = data["prompt"]
+
+    # Construct messages
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an artificial intelligence assistant and you need to "
+                "engage in a helpful, detailed, polite conversation with a user."
+            ),
+        },
+        {
+            "role": "user",
+            "content": user_prompt,
+        },
+    ]
+
+    try:
+        # Call Perplexity API
+        response = research_client.chat.completions.create(
+            model="sonar-pro",
+            messages=messages,
+        )
+
+        # Extract and return
+        result = extract_message_and_search_results(response)
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
