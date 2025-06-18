@@ -46,8 +46,12 @@ CORS(app,
 def add_cors_headers(response):
     """Helper function to add CORS headers to any response"""
     origin = request.headers.get('Origin')
+    # Always set the Access-Control-Allow-Origin header for preflight requests
     if origin in ["http://localhost:3000", "https://notebook-mvp.vercel.app"]:
         response.headers['Access-Control-Allow-Origin'] = origin
+    else:
+        # For preflight requests, set the header to the actual origin
+        response.headers['Access-Control-Allow-Origin'] = origin or '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
