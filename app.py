@@ -1997,7 +1997,7 @@ def catch_all(path):
         "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
     })), 404
 
-research_client = OpenAI(api_key="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", base_url="https://api.perplexity.ai")
+research_client = OpenAI(api_key=os.getenv("PERPLEXITY_API_KEY"), base_url="https://api.perplexity.ai")
 # Extractor function
 def extract_message_and_search_results(response):
     message = response.choices[0].message.content
