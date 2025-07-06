@@ -1400,11 +1400,52 @@ def fix_code_with_llm(code: str, error: str) -> str:
 
 
 def run_code(code: str) -> dict:
-    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
-    # RUN_CODE_ENDPOINT = "http://localhost:5000/api/run_code_local"
-    response = requests.post(RUN_CODE_ENDPOINT, json={"code": code})
-    return response.json()
-
+    """Internal code execution without HTTP calls"""
+    try:
+        # Set up execution environment with useful libraries
+        exec_globals = {
+            "__builtins__": __builtins__,
+            "requests": __import__("requests"),
+            "pandas": __import__("pandas"),
+            "json": __import__("json"),
+            "datetime": __import__("datetime"),
+            "os": __import__("os"),
+            "sys": __import__("sys"),
+            "io": __import__("io"),
+            "base64": __import__("base64"),
+            "xlsxwriter": __import__("xlsxwriter"),
+        }
+        
+        # Create a BytesIO buffer to capture output
+        output_buffer = io.BytesIO()
+        
+        # Create a custom print function that writes to our buffer
+        def custom_print(*args, **kwargs):
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            output = sep.join(str(arg) for arg in args) + end
+            output_buffer.write(output.encode('utf-8'))
+        
+        # Add our custom print to the execution globals
+        exec_globals['print'] = custom_print
+        
+        # Execute the code with our custom print function
+        exec(code, exec_globals)
+        
+        # Get the output and decode it
+        output_buffer.seek(0)
+        result = output_buffer.getvalue().decode('utf-8').strip()
+        
+        return {
+            "success": True,
+            "output": result
+        }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 def validate_and_clean_code(code: str, max_syntax_retries: int = 2) -> str:
     cleaned = strict_code_cleaner(code)
