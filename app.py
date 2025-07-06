@@ -27,6 +27,8 @@ from urllib.parse import urlparse
 import base64
 from io import BytesIO
 import math
+import matplotlib
+matplotlib.use('Agg')  # Add this line at the top
 
 load_dotenv()
 
@@ -1398,8 +1400,8 @@ def fix_code_with_llm(code: str, error: str) -> str:
 
 
 def run_code(code: str) -> dict:
-    # RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
-    RUN_CODE_ENDPOINT = "http://localhost:5000/api/run_code_local"
+    RUN_CODE_ENDPOINT = "https://test-render-q8l2.onrender.com/api/run_code_local"
+    # RUN_CODE_ENDPOINT = "http://localhost:5000/api/run_code_local"
     response = requests.post(RUN_CODE_ENDPOINT, json={"code": code})
     return response.json()
 
@@ -1470,8 +1472,10 @@ def excel_agent():
         if request.method == 'POST':
             data = request.json
             prompt = data.get('prompt')
+            user_id = data.get('user_id')  # Add user_id parameter
         else:
             prompt = request.args.get('prompt')
+            user_id = request.args.get('user_id')  # Add user_id parameter
 
         if not prompt:
             return add_cors_headers(jsonify({
@@ -1479,7 +1483,14 @@ def excel_agent():
                 "error": "Missing required field: 'prompt' is required"
             })), 400
 
+        if not user_id:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing required field: 'user_id' is required"
+            })), 400
+
         print("📝 Received prompt:", prompt)
+        print("👤 User ID:", user_id)
         
         # Generate and run the code
         result = generate_and_run_code_from_prompt(prompt)
@@ -1493,7 +1504,11 @@ def excel_agent():
             return add_cors_headers(jsonify(result)), 500
 
         # Define the expected output path
-        expected_output_path = os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.xlsx")
+        # Local version (comment out for production)
+        # expected_output_path = os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.xlsx")
+        
+        # Production version (uncomment for deployment)
+        expected_output_path = os.path.join(os.getcwd(), "output.xlsx")
         print("🔍 Looking for file at:", expected_output_path)
 
         if not os.path.exists(expected_output_path):
@@ -1508,32 +1523,54 @@ def excel_agent():
                 }
             })), 500
 
-        # Register the deletion to happen after response is sent
-        @after_this_request
-        def remove_file(response):
-            try:
-                os.remove(expected_output_path)
-                print(f"🧹 Deleted {expected_output_path} after sending.")
-            except Exception as e:
-                print(f"⚠️ Failed to delete file: {e}")
-            return response
+        # Upload Excel file to Firebase
+        print("📤 Uploading Excel file to Firebase...")
+        storage_path = upload_excel_to_firebase(user_id, expected_output_path)
+        
+        # Generate download URL
+        download_url = get_firebase_download_url(storage_path)
+        
+        if not download_url:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Failed to generate download URL"
+            })), 500
 
-        print(f"✅ Successfully found and sending file: {expected_output_path}")
+        # Store metadata in Firestore
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        sanitized_filename = f"excel_{timestamp}"
         
-        # Create the response with send_file
-        response = send_file(
-            expected_output_path,
-            as_attachment=True,
-            download_name="output.xlsx",
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_filename)
+        file_data = {
+            "created_at": datetime.utcnow().isoformat(),
+            "download_link": storage_path,
+            "file_type": "excel",
+            "full_name": f"Generated Excel - {prompt[:50]}...",
+            "nickname": f"Excel Spreadsheet",
+            "userID": user_id,
+            "prompt": prompt
+        }
+
+        if file_ref.get().exists:
+            file_ref.update(file_data)
+        else:
+            file_ref.set(file_data)
+
+        # Clean up local file
+        try:
+            os.remove(expected_output_path)
+            print(f"🧹 Deleted local file: {expected_output_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to delete local file: {e}")
+
+        print(f"✅ Successfully uploaded Excel file and generated download URL")
         
-        # Add CORS headers and expose Content-Disposition
-        response = add_cors_headers(response)
-        response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
-        response.headers['Content-Disposition'] = f'attachment; filename=output.xlsx'
-        
-        return response
+        return add_cors_headers(jsonify({
+            "success": True,
+            "download_url": download_url,
+            "storage_path": storage_path,
+            "message": "Done! Here's the link to your spreadsheet -"
+        }))
 
     except Exception as e:
         print("❌ Unexpected error:", str(e))
@@ -1543,6 +1580,40 @@ def excel_agent():
             "error": str(e),
             "traceback": traceback.format_exc()
         })), 500
+
+# Function to upload Excel files to Firebase Cloud Storage
+def upload_excel_to_firebase(userid, excel_path, filename=None):
+    """
+    Uploads an Excel file to Firebase Cloud Storage under:
+    gs://notebookmvp.firebasestorage.app/users/{userid}/excel/{filename}.xlsx
+
+    Args:
+        userid (str): User ID
+        excel_path (str): Local path to the Excel file
+        filename (str, optional): Custom file name (if None, defaults to timestamp)
+
+    Returns:
+        str: Firebase Storage file path
+    """
+    bucket = storage.bucket()
+    
+    # If no filename is provided, default to timestamp
+    if filename is None:
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"excel_{timestamp}"
+    
+    # Sanitize filename to prevent folder creation issues
+    filename = sanitize_filename(filename)
+    filename = f"users/{userid}/excel/{filename}.xlsx"  # User-specific path
+
+    blob = bucket.blob(filename)
+    
+    # Upload the Excel file
+    with open(excel_path, 'rb') as f:
+        blob.upload_from_file(f, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    # Return the final storage path
+    return f"gs://notebookmvp.firebasestorage.app/{filename}"
 
 #INSTAGRAM AGENT STUFF BELOW
 
@@ -1852,140 +1923,470 @@ def image_search():
             "error": str(e)
         })), 500
 
+def strict_code_cleaner(text: str) -> str:
+    if text.startswith("```python") and text.endswith("```"):
+        text = "\n".join(text.strip().splitlines()[1:-1])
+    lines = text.strip().splitlines()
+    filtered = [
+        line for line in lines
+        if not line.strip().startswith(("Here", "This code", "```", "!", "It seems", "Let's"))
+    ]
+    return "\n".join(filtered).strip()
+
+def is_syntax_valid(code: str):
+    try:
+        compile(code, "<string>", "exec")
+        return True, None
+    except SyntaxError as e:
+        return False, f"{e.__class__.__name__}: {e.msg} (line {e.lineno})"
+
+def fix_code_with_llm(code: str, error: str) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You're a Python code repair assistant. Return only valid, corrected Python code. "
+                "Do not explain, comment, include markdown, or use pip installs. "
+                "Your entire response will be executed with exec()."
+            )
+        },
+        {
+            "role": "user",
+            "content": f"Broken code:\n\n{code}\n\nError:\n\n{error}"
+        }
+    ]
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages
+    )
+    return strict_code_cleaner(response.choices[0].message.content)
+
+def validate_and_clean_code(code: str, max_syntax_retries: int = 2) -> str:
+    cleaned = strict_code_cleaner(code)
+    for attempt in range(max_syntax_retries + 1):
+        is_valid, error = is_syntax_valid(cleaned)
+        if is_valid:
+            return cleaned
+        cleaned = fix_code_with_llm(cleaned, error)
+    raise ValueError("Code could not be fixed to pass Python syntax checks.")
+
+# --- Code Execution Endpoint ---
+
+@app.route('/api/run_plot_code_local', methods=['POST', 'OPTIONS'])
+def run_plot_code_local():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    try:
+        data = request.json
+        code = data.get('code')
+        if not code:
+            return add_cors_headers(jsonify({"success": False, "error": "No code provided"})), 400
+        
+        exec_globals = {
+            "__builtins__": __builtins__,
+            "requests": __import__("requests"),
+            "pandas": __import__("pandas"),
+            "numpy": __import__("numpy"),
+            "json": __import__("json"),
+            "matplotlib": __import__("matplotlib"),
+            "plt": __import__("matplotlib.pyplot"),
+            "seaborn": __import__("seaborn"),
+            "os": __import__("os"),
+            "io": __import__("io"),
+            "sys": __import__("sys"),
+            "base64": __import__("base64"),
+        }
+
+        output_buffer = io.BytesIO()
+        def custom_print(*args, **kwargs):
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            output = sep.join(str(arg) for arg in args) + end
+            output_buffer.write(output.encode('utf-8'))
+        exec_globals['print'] = custom_print
+        
+        try:
+            exec(code, exec_globals)
+            output_buffer.seek(0)
+            result = output_buffer.getvalue().decode('utf-8').strip()
+            return add_cors_headers(jsonify({"success": True, "output": result}))
+        except Exception:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": traceback.format_exc()
+            })), 400
+    except Exception as e:
+        return add_cors_headers(jsonify({"success": False, "error": str(e)})), 500
+
+# --- LLM Prompt Generation ---
+
+PLOT_SYSTEM_PROMPT = """
+You are a Python code generation agent that creates data visualizations based on user instructions. You can use pandas, matplotlib, and seaborn libraries to generate plots and save them as PNG image files.
+
+You always:
+# - Save the plot to "output.png" in the current directory  # Production
+# - Save the plot to "/Users/sahilsinha/Documents/caio/test_backend/output.png"  # Local
+# - Use matplotlib.pyplot.savefig('output.png') at the end of plotting.  # Production
+# - Use matplotlib.pyplot.savefig('/Users/sahilsinha/Documents/caio/test_backend/output.png') at the end of plotting.  # Local
+- Do not display plots (never use plt.show()).
+- Return pure runnable Python code. No markdown, no explanations.
+- Use pandas for data handling.
+- Use numpy if you need random or synthetic data generation.
+- Always import all required libraries at the top.
+- Do not use any other libraries beyond pandas, numpy, matplotlib, seaborn.
+- No markdown, no commentary, no pip installs.
+
+Your code will be executed directly by Python's exec().
+
+Here are examples:
+
+<Bar Chart>
+import pandas as pd
+import matplotlib.pyplot as plt
+
+data = {'Region': ['North', 'South', 'East', 'West'], 'Sales': [300, 450, 200, 500]}
+df = pd.DataFrame(data)
+
+plt.figure(figsize=(8,6))
+plt.bar(df['Region'], df['Sales'])
+plt.title("Sales by Region")
+plt.xlabel("Region")
+plt.ylabel("Sales ($)")
+# plt.savefig('output.png')  # Production
+# plt.savefig('/Users/sahilsinha/Documents/caio/test_backend/output.png')  # Local
+plt.savefig('output.png')
+"""
+
+def build_plot_system_prompt(chart_type: str) -> str:
+    base_prompt = PLOT_SYSTEM_PROMPT
+    if chart_type == "smart":
+        return base_prompt
+    chart_type_instruction = f"""
+IMPORTANT:
+- The user wants a {chart_type} chart.
+- You must generate a {chart_type} chart.
+- Use pandas, matplotlib, and seaborn to generate a {chart_type} plot.
+- Do not generate any other chart types.
+"""
+    return chart_type_instruction + "\n" + base_prompt
+
+def generate_plot_code_from_prompt(prompt: str, chart_type: str) -> str:
+    system_prompt = build_plot_system_prompt(chart_type)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages
+    )
+    return strict_code_cleaner(response.choices[0].message.content)
+
+# --- Full Visual Agent API ---
+
+# Function to upload image to Firebase Cloud Storage
+def upload_image_to_firebase(userid, image_path, filename=None):
+    """
+    Uploads an image file to Firebase Cloud Storage under:
+    gs://notebookmvp.firebasestorage.app/users/{userid}/images/{filename}.png
+
+    Args:
+        userid (str): User ID
+        image_path (str): Local path to the image file
+        filename (str, optional): Custom file name (if None, defaults to timestamp)
+
+    Returns:
+        str: Firebase Storage file path
+    """
+    bucket = storage.bucket()
+    
+    # If no filename is provided, default to timestamp
+    if filename is None:
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"plot_{timestamp}"
+    
+    # Sanitize filename to prevent folder creation issues
+    filename = sanitize_filename(filename)
+    filename = f"users/{userid}/images/{filename}.png"  # User-specific path
+
+    blob = bucket.blob(filename)
+    
+    # Upload the image file
+    with open(image_path, 'rb') as f:
+        blob.upload_from_file(f, content_type="image/png")
+    
+    # Return the final storage path
+    return f"gs://notebookmvp.firebasestorage.app/{filename}"
+
+# Function to get public download URL from Firebase Storage
+def get_firebase_download_url(storage_path):
+    """
+    Gets a public download URL for a file in Firebase Storage.
+    
+    Args:
+        storage_path (str): Firebase Storage path (gs://...)
+        
+    Returns:
+        str: Public download URL
+    """
+    try:
+        # Extract file path from the Firebase Storage URL
+        file_path = storage_path.replace("gs://notebookmvp.firebasestorage.app/", "")
+        
+        bucket = storage.bucket()
+        blob = bucket.blob(file_path)
+        
+        # Generate a signed URL that expires in 1 hour
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=3600,  # 1 hour
+            method="GET"
+        )
+        
+        return url
+    except Exception as e:
+        print(f"Error generating download URL: {str(e)}")
+        return None
+
+@app.route('/api/visual_agent', methods=['POST', 'OPTIONS'])
+def visual_agent():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+
+    try:
+        data = request.json
+        prompt = data.get('prompt')
+        chart_type = data.get('chart_type', 'smart').lower()
+        user_id = data.get('user_id')  # Add user_id parameter
+
+        if not prompt:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing required field: 'prompt'"
+            })), 400
+
+        if not user_id:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing required field: 'user_id'"
+            })), 400
+
+        print(f"📝 Prompt: {prompt}")
+        print(f" Chart type: {chart_type}")
+        print(f" User ID: {user_id}")
+
+        raw_code = generate_plot_code_from_prompt(prompt, chart_type)
+        code = validate_and_clean_code(raw_code)
+
+        # RUN_PLOT_ENDPOINT = "http://localhost:5000/api/run_plot_code_local"
+        RUN_PLOT_ENDPOINT = "https://caio-backend.onrender.com/api/run_plot_code_local"
+        response = requests.post(RUN_PLOT_ENDPOINT, json={"code": code})
+        result = response.json()
+
+        if not result.get("success"):
+            return add_cors_headers(jsonify(result)), 500
+
+        # Local version (comment out for production)
+        # expected_output_path = os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.png")
+        
+        # Production version (uncomment for deployment)
+        expected_output_path = os.path.join(os.getcwd(), "output.png")
+        if not os.path.exists(expected_output_path):
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": f"Expected plot file not found at: {expected_output_path}"
+            })), 500
+
+        # Upload image to Firebase
+        print(" Uploading image to Firebase...")
+        storage_path = upload_image_to_firebase(user_id, expected_output_path)
+        
+        # Generate download URL
+        download_url = get_firebase_download_url(storage_path)
+        
+        if not download_url:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Failed to generate download URL"
+            })), 500
+
+        # Store metadata in Firestore
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        sanitized_filename = f"plot_{timestamp}"
+        
+        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_filename)
+        file_data = {
+            "created_at": datetime.utcnow().isoformat(),
+            "download_link": storage_path,
+            "file_type": "image",
+            "full_name": f"Generated plot - {prompt[:50]}...",
+            "nickname": f"Plot - {chart_type.title()}",
+            "userID": user_id,
+            "prompt": prompt,
+            "chart_type": chart_type
+        }
+
+        if file_ref.get().exists:
+            file_ref.update(file_data)
+        else:
+            file_ref.set(file_data)
+
+        # Clean up local file
+        try:
+            os.remove(expected_output_path)
+            print(f" Deleted local file: {expected_output_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to delete local file: {e}")
+
+        return add_cors_headers(jsonify({
+            "success": True,
+            "download_url": download_url,
+            "storage_path": storage_path,
+            "message": "Image generated and uploaded successfully"
+        }))
+
+    except Exception as e:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })), 500
+
 #coffee agent stuff below
 # Load dataset globally
 # sheet_url = "https://docs.google.com/spreadsheets/d/1xA2ToifiDFcGHBRSl9nLlMl_I2KIb2JVDWF06iatFnw/export?format=csv&gid=1953223582"
-sheet_url = "https://docs.google.com/spreadsheets/d/1AxOk1qF-Q-bTqqmtTT__AcoF0yUMuHK5COaPX3Kb6tw/export?format=csv"
-df_coffee = pd.read_csv(sheet_url)
+# sheet_url = "https://docs.google.com/spreadsheets/d/1AxOk1qF-Q-bTqqmtTT__AcoF0yUMuHK5COaPX3Kb6tw/export?format=csv"
+# df_coffee = pd.read_csv(sheet_url)
 
-@app.route("/query_coffee", methods=["GET"])
-def query_coffee():
-    user_query = request.args.get("q", default="", type=str)
-    if not user_query:
-        return jsonify({"error": "Missing required query parameter 'q'"}), 400
+# @app.route("/query_coffee", methods=["GET"])
+# def query_coffee():
+#     user_query = request.args.get("q", default="", type=str)
+#     if not user_query:
+#         return jsonify({"error": "Missing required query parameter 'q'"}), 400
 
-    valid_values = {
-        "nyc_neighborhood": [
-            "East Village", "SoHo", "Flatiron District", "Gowanus", "Kips Bay",
-            "Chelsea", "NoMad", "Downtown", "Midtown", "Williamsburg",
-            "Garment District", "Hell's Kitchen", "Turtle Bay", "Boerum Hill",
-            "Greenwich Village", "South Street Seaport", "Long Island City",
-            "Bedford-Stuyvesant", "Lower East Side", "Meatpacking District",
-            "Koreatown", "Clinton Hill"
-        ],
-        "wifi": ["Yes", "Yes - limited", "Unknown", "No"],
-        "outlets": ["Unknown", "Few", "Enough", "No", "Many"],
-        "bathrooms": ["No", "Yes", "Unknown"],
-        "laptops_on_weekends": ["No", "Limited", "Yes", "Unknown"]
-    }
+#     valid_values = {
+#         "nyc_neighborhood": [
+#             "East Village", "SoHo", "Flatiron District", "Gowanus", "Kips Bay",
+#             "Chelsea", "NoMad", "Downtown", "Midtown", "Williamsburg",
+#             "Garment District", "Hell's Kitchen", "Turtle Bay", "Boerum Hill",
+#             "Greenwich Village", "South Street Seaport", "Long Island City",
+#             "Bedford-Stuyvesant", "Lower East Side", "Meatpacking District",
+#             "Koreatown", "Clinton Hill"
+#         ],
+#         "wifi": ["Yes", "Yes - limited", "Unknown", "No"],
+#         "outlets": ["Unknown", "Few", "Enough", "No", "Many"],
+#         "bathrooms": ["No", "Yes", "Unknown"],
+#         "laptops_on_weekends": ["No", "Limited", "Yes", "Unknown"]
+#     }
 
-    valid_options_str = "\n".join([f"- {col}: {', '.join(vals)}" for col, vals in valid_values.items()])
-    system_msg = (
-    "You are a helpful assistant. Based on a user query, extract structured filters to apply "
-    "to a coffee shop dataset with the following columns:\n\n"
-    f"{valid_options_str}\n\n"
-    "Translate natural phrases into structured filters using the columns and values above.\n"
-    "Use these mappings when you see common language:\n"
-    "- \"with outlets\" → filter for outlets ≠ \"No\" (i.e., value is one of: \"Few\", \"Enough\", \"Many\")\n"
-    "- \"with many outlets\" → {\"column\": \"outlets\", \"value\": \"Many\"}\n"
-    "- \"no outlets\" → {\"column\": \"outlets\", \"value\": \"No\"}\n"
-    "- \"with wifi\" → {\"column\": \"wifi\", \"value\": \"Yes\"}\n"
-    "- \"wifi with password\" → {\"column\": \"wifi\", \"value\": \"Yes - limited\"}\n"
-    "- \"no wifi\" → {\"column\": \"wifi\", \"value\": \"No\"}\n"
-    "- \"laptop friendly on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"Yes\"}\n"
-    "- \"no laptops on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"No\"}\n"
-    "- \"with bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"Yes\"}\n"
-    "- \"no bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"No\"}\n\n"
-    "You may return arrays of values if appropriate. For example:\n"
-    '{"filters": [{"column": "outlets", "value": ["Few", "Enough", "Many"]}]}\n\n'
-    "Only use values from the allowed lists. Return a JSON object with a \"filters\" array."
-)
+#     valid_options_str = "\n".join([f"- {col}: {', '.join(vals)}" for col, vals in valid_values.items()])
+#     system_msg = (
+#     "You are a helpful assistant. Based on a user query, extract structured filters to apply "
+#     "to a coffee shop dataset with the following columns:\n\n"
+#     f"{valid_options_str}\n\n"
+#     "Translate natural phrases into structured filters using the columns and values above.\n"
+#     "Use these mappings when you see common language:\n"
+#     "- \"with outlets\" → filter for outlets ≠ \"No\" (i.e., value is one of: \"Few\", \"Enough\", \"Many\")\n"
+#     "- \"with many outlets\" → {\"column\": \"outlets\", \"value\": \"Many\"}\n"
+#     "- \"no outlets\" → {\"column\": \"outlets\", \"value\": \"No\"}\n"
+#     "- \"with wifi\" → {\"column\": \"wifi\", \"value\": \"Yes\"}\n"
+#     "- \"wifi with password\" → {\"column\": \"wifi\", \"value\": \"Yes - limited\"}\n"
+#     "- \"no wifi\" → {\"column\": \"wifi\", \"value\": \"No\"}\n"
+#     "- \"laptop friendly on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"Yes\"}\n"
+#     "- \"no laptops on weekends\" → {\"column\": \"laptops_on_weekends\", \"value\": \"No\"}\n"
+#     "- \"with bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"Yes\"}\n"
+#     "- \"no bathrooms\" → {\"column\": \"bathrooms\", \"value\": \"No\"}\n\n"
+#     "You may return arrays of values if appropriate. For example:\n"
+#     '{"filters": [{"column": "outlets", "value": ["Few", "Enough", "Many"]}]}\n\n'
+#     "Only use values from the allowed lists. Return a JSON object with a \"filters\" array."
+# )
 
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_query}
-        ],
-        temperature=0
-    )
-    content = response.choices[0].message.content
+#     response = client.chat.completions.create(
+#         model="gpt-4",
+#         messages=[
+#             {"role": "system", "content": system_msg},
+#             {"role": "user", "content": user_query}
+#         ],
+#         temperature=0
+#     )
+#     content = response.choices[0].message.content
 
-    try:
-        filters = json.loads(content)["filters"]
-    except json.JSONDecodeError:
-        filters = []
+#     try:
+#         filters = json.loads(content)["filters"]
+#     except json.JSONDecodeError:
+#         filters = []
 
-    # Apply hard filters
-    filtered_df = df_coffee.copy()
-    pandas_code = ["# Start with a copy of the original dataframe", "filtered_df = df_coffee.copy()"]
+#     # Apply hard filters
+#     filtered_df = df_coffee.copy()
+#     pandas_code = ["# Start with a copy of the original dataframe", "filtered_df = df_coffee.copy()"]
     
-    for f in filters:
-        col, val = f["column"], f["value"]
-        if col in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df[col] == val]
-            pandas_code.append(f"# Filter for {col} == {val}")
-            pandas_code.append(f"filtered_df = filtered_df[filtered_df['{col}'] == '{val}']")
+#     for f in filters:
+#         col, val = f["column"], f["value"]
+#         if col in filtered_df.columns:
+#             filtered_df = filtered_df[filtered_df[col] == val]
+#             pandas_code.append(f"# Filter for {col} == {val}")
+#             pandas_code.append(f"filtered_df = filtered_df[filtered_df['{col}'] == '{val}']")
 
-    # Get final results
-    pandas_code.append("# Select final columns and get top 10 results")
-    pandas_code.append("locations = filtered_df[['name', 'address', 'nyc_neighborhood', 'rating', 'wifi', 'outlets', 'laptops_on_weekends']].head(10).to_dict(orient='records')")
+#     # Get final results
+#     pandas_code.append("# Select final columns and get top 10 results")
+#     pandas_code.append("locations = filtered_df[['name', 'address', 'nyc_neighborhood', 'rating', 'wifi', 'outlets', 'laptops_on_weekends']].head(10).to_dict(orient='records')")
     
-    locations = filtered_df[["name", "address", "nyc_neighborhood", "rating", "wifi", "outlets", "laptops_on_weekends"]].head(10).to_dict(orient="records")
+#     locations = filtered_df[["name", "address", "nyc_neighborhood", "rating", "wifi", "outlets", "laptops_on_weekends"]].head(10).to_dict(orient="records")
 
-    # Generate a follow-up question
-    follow_up_prompt = f"Given this user request: '{user_query}', what is one follow-up question I could ask to help refine or narrow down their coffee shop search?"
-    follow_up_response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant who asks one smart follow-up question to refine a coffee shop search."},
-            {"role": "user", "content": follow_up_prompt}
-        ],
-        temperature=0.7
-    )
-    follow_up_question = follow_up_response.choices[0].message.content.strip()
+#     # Generate a follow-up question
+#     follow_up_prompt = f"Given this user request: '{user_query}', what is one follow-up question I could ask to help refine or narrow down their coffee shop search?"
+#     follow_up_response = client.chat.completions.create(
+#         model="gpt-4",
+#         messages=[
+#             {"role": "system", "content": "You are a helpful assistant who asks one smart follow-up question to refine a coffee shop search."},
+#             {"role": "user", "content": follow_up_prompt}
+#         ],
+#         temperature=0.7
+#     )
+#     follow_up_question = follow_up_response.choices[0].message.content.strip()
 
-    return jsonify({
-        "locations": locations,
-        "follow_up_question": follow_up_question,
-        "pandas_code": "\n".join(pandas_code)
-    })
+#     return jsonify({
+#         "locations": locations,
+#         "follow_up_question": follow_up_question,
+#         "pandas_code": "\n".join(pandas_code)
+#     })
 
-def apply_manual_filters(df, filters):
-    filtered_df = df.copy()
+# def apply_manual_filters(df, filters):
+#     filtered_df = df.copy()
 
-    if wifi := filters.get("wifi"):
-        if isinstance(wifi, list) and wifi:
-            filtered_df = filtered_df[filtered_df["wifi"].isin(wifi)]
+#     if wifi := filters.get("wifi"):
+#         if isinstance(wifi, list) and wifi:
+#             filtered_df = filtered_df[filtered_df["wifi"].isin(wifi)]
 
-    if outlets := filters.get("outlets"):
-        if isinstance(outlets, list) and outlets:
-            filtered_df = filtered_df[filtered_df["outlets"].isin(outlets)]
+#     if outlets := filters.get("outlets"):
+#         if isinstance(outlets, list) and outlets:
+#             filtered_df = filtered_df[filtered_df["outlets"].isin(outlets)]
 
-    if laptops := filters.get("laptops"):
-        if isinstance(laptops, list) and laptops:
-            filtered_df = filtered_df[filtered_df["laptops_on_weekends"].isin(laptops)]
+#     if laptops := filters.get("laptops"):
+#         if isinstance(laptops, list) and laptops:
+#             filtered_df = filtered_df[filtered_df["laptops_on_weekends"].isin(laptops)]
 
-    if neighborhoods := filters.get("neighborhood"):
-        if isinstance(neighborhoods, list) and neighborhoods:
-            filtered_df = filtered_df[filtered_df["nyc_neighborhood"].isin(neighborhoods)]
+#     if neighborhoods := filters.get("neighborhood"):
+#         if isinstance(neighborhoods, list) and neighborhoods:
+#             filtered_df = filtered_df[filtered_df["nyc_neighborhood"].isin(neighborhoods)]
 
-    if rating := filters.get("rating"):
-        try:
-            rating_float = float(rating)
-            filtered_df = filtered_df[filtered_df["rating"] >= rating_float]
-        except ValueError:
-            pass
+#     if rating := filters.get("rating"):
+#         try:
+#             rating_float = float(rating)
+#             filtered_df = filtered_df[filtered_df["rating"] >= rating_float]
+#         except ValueError:
+#             pass
 
-    return filtered_df.reset_index(drop=True)
+#     return filtered_df.reset_index(drop=True)
 
-@app.route("/apply_filters", methods=["POST"])
-def filter_endpoint():
-    filters = request.get_json()
-    filtered = apply_manual_filters(df_coffee, filters)
+# @app.route("/apply_filters", methods=["POST"])
+# def filter_endpoint():
+#     filters = request.get_json()
+#     filtered = apply_manual_filters(df_coffee, filters)
 
-    locations = filtered.to_dict(orient="records")
-    return jsonify({"locations": locations})
+#     locations = filtered.to_dict(orient="records")
+#     return jsonify({"locations": locations})
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
@@ -2013,49 +2414,134 @@ def extract_message_and_search_results(response):
         "search_results": search_results
     }
 
-# API route
+# # API route
 @app.route("/ask", methods=["POST"])
 def ask():
     data = request.get_json()
+    print("Received request data:", data)  # Log incoming request data
 
     # Validate input
     if not data or "prompt" not in data:
         return jsonify({"error": "Missing 'prompt' in request body"}), 400
 
     user_prompt = data["prompt"]
-
-    # Construct messages
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an artificial intelligence assistant and you need to "
-                "engage in a helpful, detailed, polite conversation with a user."
-            ),
-        },
-        {
-            "role": "user",
-            "content": user_prompt,
-        },
-    ]
+    search_engine = data["search_engine"]
 
     try:
-        # Call Perplexity API
+        if search_engine == "perplexity":
+            print("Using Perplexity search engine")
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an artificial intelligence assistant and you need to "
+                        "engage in a helpful, detailed, polite conversation with a user."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ]
+
+            print("Making Perplexity API call...")
+            response = research_client.chat.completions.create(
+                model="sonar-pro",
+                messages=messages,
+            )
+            print("Raw Perplexity response:", response)
+
+            result = extract_message_and_search_results(response)
+            print("Processed result:", result)
+
+            # Add explicit CORS headers to response
+            response = jsonify(result)
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response
+
+        elif search_engine == "firecrawl":
+            print("Using Firecrawl search engine")
+            response = firecrawl_client.search(user_prompt)
+            print("Raw Firecrawl response:", response)
+            
+            result = {
+                "message": response.get('success', False),
+                "search_results": response.get('data', [])
+            }
+            print("Processed result:", result)
+            return jsonify(result)
+
+    except Exception as e:
+        print("Error occurred:", str(e))
+        print("Full traceback:", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/scrape", methods=["POST"])
+def scrape():
+    data = request.get_json()
+
+    # Validate input
+    if not data or "url" not in data:
+        return jsonify({"error": "Missing 'url' in request body"}), 400
+
+    url = data["url"]
+    prompt = data.get("prompt")  # Optional parameter
+
+    # Validate URL format
+    try:
+        result = urlparse(url)
+        if not all([result.scheme, result.netloc]):
+            return jsonify({"error": "URL isn't valid try again"}), 400
+    except Exception:
+        return jsonify({"error": "URL isn't valid try again"}), 400
+
+    try:
+        # Get scraped content and ensure it's a dictionary
+        scrape_result = scrape_website(url)
+        print("Scrape result type:", type(scrape_result))  # Debug print
+        print("Scrape result:", scrape_result)  # Debug print
+        
+        # If no prompt, return scrape result as is
+        if not prompt:
+            return jsonify(scrape_result)
+        
+        # If prompt exists, analyze the content
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI assistant analyzing web content. "
+                    "Use the provided content to answer the user's question accurately. "
+                    "If the answer cannot be found in the content, say so."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Content to analyze: {scrape_result}\n\nQuestion: {prompt}",  # Changed this line to use the whole content
+            },
+        ]
+
         response = research_client.chat.completions.create(
             model="sonar-pro",
             messages=messages,
+            timeout=30
         )
 
-        # Extract and return
-        result = extract_message_and_search_results(response)
-        return jsonify(result)
+        # Return both the original scrape result and the analysis
+        return jsonify({
+            "markdown": scrape_result,
+            "analysis": response.choices[0].message.content
+        })
 
     except Exception as e:
+        print("Error occurred:", str(e))
+        print("Full traceback:", traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
-
 if __name__ == '__main__':
-    app.run(debug=False, port=5000, host='0.0.0.0')
-    # app.run(debug=True, port=5000)
-    # port = int(os.getenv('PORT', 5000))
-    # app.run(host='0.0.0.0', port=port)
+    # Local version (comment out for production)
+    # app.run(debug=False, port=5000, host='0.0.0.0')
+    
+    # Production version (uncomment for deployment)
+    port = int(os.getenv('PORT', 5000))
+    app.run(debug=False, port=port, host='0.0.0.0')
