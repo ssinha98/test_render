@@ -546,22 +546,21 @@ def checkin_email():
             "details": response.text if response else "Failed to send email"
         })), 500
 
-def perform_google_search(query: str = None, engine_type: str = "search", topic_token: str = None, section_token: str = None, window: str = None, trend: str = None, index_market: str = None) -> dict:
+def perform_google_search(query: str = None, engine_type: str = "search", topic_token: str = None, section_token: str = None, window: str = None, trend: str = None, index_market: str = None, num: int = 10) -> dict:
     """Performs a Google search using SerpAPI"""
     try:
-        # Base params
         params = {
             "api_key": os.getenv('SERPAPI_KEY'),
-            "gl": "us",  # Location set to US
-            "hl": "en"   # Language set to English
+            "gl": "us",
+            "hl": "en"
         }
-        
-        # Set engine type and specific parameters
         if engine_type == "search":
             params["engine"] = "google"
             params["q"] = query
+            params["num"] = num
         elif engine_type == "news":
             params["engine"] = "google_news"
+            params["num"] = num  # Add this line
             if query:
                 params["q"] = query
             elif topic_token:
@@ -576,10 +575,12 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
         elif engine_type == "finance":
             params["engine"] = "google_finance"
             params["q"] = query
+            params["num"] = num  # Add this line
             if window:
                 params["window"] = window
         elif engine_type == "markets":
             params["engine"] = "google_finance_markets"
+            params["num"] = num  # Add this line
             if not trend:
                 return {
                     "success": False,
@@ -601,7 +602,7 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
         if engine_type == "search":
             return {
                 "success": True,
-                "results": results.get("organic_results", [])
+                "results": results.get("organic_results", [])  # Do NOT slice here, slice in the endpoint
             }
         elif engine_type == "news":
             return {
@@ -638,6 +639,7 @@ def search():
         window = data.get('window')
         trend = data.get('trend')
         index_market = data.get('index_market')
+        num = int(data.get('num', 10))  # Add this line
     else:  # GET
         query = request.args.get('q')
         engine = request.args.get('engine', 'search')
@@ -646,6 +648,7 @@ def search():
         window = request.args.get('window')
         trend = request.args.get('trend')
         index_market = request.args.get('index_market')
+        num = int(request.args.get('num', 10))  # Add this line
     
     if engine == "news" and not (query or topic_token):
         return add_cors_headers(jsonify({
@@ -663,7 +666,10 @@ def search():
             "error": "Markets search requires a trend parameter"
         })), 400
         
-    result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market)
+    result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market, num=num)
+    # Guarantee slicing here:
+    if "results" in result and isinstance(result["results"], list):
+        result["results"] = result["results"][:num]
     return add_cors_headers(jsonify(result))
 
 def send_email(to_email, subject, body):
