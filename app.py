@@ -2560,6 +2560,7 @@ def scrape():
                     "You are an AI assistant analyzing web content. "
                     "Use the provided content to answer the user's question accurately. "
                     "If the answer cannot be found in the content, say so."
+                    "Please be concise, and limit LLM preamble. Avoid phraises like 'Here is the data' or 'Here is the analysis'."
                 ),
             },
             {
