@@ -2585,6 +2585,79 @@ def scrape():
         print("Full traceback:", traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/apollo_enrich', methods=['POST', 'OPTIONS'])
+def apollo_enrich():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+
+    try:
+        data = request.json
+        name = data.get('name')
+        company = data.get('company')
+        prompt = data.get('prompt')  # Optional
+
+        if not name or not company:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing required fields: 'name' and 'company' are required"
+            })), 400
+
+        # Prepare Apollo API request
+        apollo_url = (
+            "https://api.apollo.io/api/v1/people/match"
+            f"?name={requests.utils.quote(name)}"
+            f"&organization_name={requests.utils.quote(company)}"
+            "&reveal_personal_emails=false"
+            "&reveal_phone_number=false"
+        )
+
+        apollo_api_key = os.getenv("APOLLO_API_KEY")
+        headers = {
+            "accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/json",
+            "x-api-key": apollo_api_key
+        }
+
+        response = requests.post(apollo_url, headers=headers)
+        try:
+            apollo_result = response.json()
+        except Exception:
+            apollo_result = {"raw": response.text}
+
+        # If no prompt, just return Apollo data
+        if not prompt:
+            return add_cors_headers(jsonify(apollo_result)), response.status_code
+
+        # If prompt, run OpenAI client over the Apollo data
+        system_message = (
+            "You are an AI assistant analyzing Apollo enrichment data. "
+            "Use the provided data to answer the user's question accurately. "
+            "If the answer cannot be found in the data, say so."
+            "Be very concise with your answers. Minimize preamble such as 'Here is the data' or 'Here is the analysis'."
+        )
+        user_message = f"Data to analyze: {json.dumps(apollo_result)}\n\nQuestion: {prompt}"
+
+        openai_response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            max_tokens=300
+        )
+
+        return add_cors_headers(jsonify({
+            "apollo_data": apollo_result,
+            "analysis": openai_response.choices[0].message.content
+        })), response.status_code
+
+    except Exception as e:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": str(e)
+        })), 500
+
 if __name__ == '__main__':
     # Local version (comment out for production)
     # app.run(debug=False, port=5000, host='0.0.0.0')
