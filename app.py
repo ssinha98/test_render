@@ -29,9 +29,10 @@ from io import BytesIO
 import math
 import matplotlib
 matplotlib.use('Agg')  # Add this line at the top
+import threading
 
 load_dotenv()
-
+print("Loaded SERPAPI_KEY:", os.getenv('SERPAPI_KEY'))
 app = Flask(__name__)
 
 # Configure CORS with more specific settings
@@ -176,34 +177,39 @@ def process_file(file, file_type):
 def upload_file():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
-    if 'file' not in request.files:
-        return add_cors_headers(jsonify({'error': 'No file part'})), 400
-    
-    file = request.files['file']
-    file_type = request.form.get('type')
-    
-    if file.filename == '':
-        return add_cors_headers(jsonify({'error': 'No selected file'})), 400
-
+    request_id = request.form.get('request_id') or request.args.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
     try:
-        # Save file
-        filename = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(filename)
-        
-        # Process file based on type
-        with open(filename, 'rb') as f:
-            processed_data = process_file(f, file_type)
-        
-        response = jsonify({
-            'success': True,
-            'filename': file.filename,
-            'filepath': filename,
-            'processed_data': processed_data
-        })
-        return add_cors_headers(response)
-    
-    except Exception as e:
-        return add_cors_headers(jsonify({'error': str(e)})), 500
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        if 'file' not in request.files:
+            return add_cors_headers(jsonify({'error': 'No file part'})), 400
+        file = request.files['file']
+        file_type = request.form.get('type')
+        if file.filename == '':
+            return add_cors_headers(jsonify({'error': 'No selected file'})), 400
+        try:
+            filename = os.path.join(UPLOAD_FOLDER, file.filename)
+            file.save(filename)
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+            with open(filename, 'rb') as f:
+                processed_data = process_file(f, file_type)
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+            response = jsonify({
+                'success': True,
+                'filename': file.filename,
+                'filepath': filename,
+                'processed_data': processed_data
+            })
+            return add_cors_headers(response)
+        except Exception as e:
+            return add_cors_headers(jsonify({'error': str(e)})), 500
+    finally:
+        cleanup_request(request_id)
 
 @app.route('/api/set-api-key', methods=['POST', 'OPTIONS'])
 def set_api_key():
@@ -260,140 +266,120 @@ def api_call_model():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
     data = request.json
-    system_prompt = data.get('system_prompt', '')
-    user_prompt = data.get('user_prompt', '')
-    save_as_csv = data.get('save_as_csv', False)
-    
-    result = call_model(system_prompt, user_prompt)
-    
-    if save_as_csv and result['success']:
-        # Parse response into lines (split by newlines)
-        response_lines = [line.strip() for line in result['response'].split('\n') if line.strip()]
-        
-        # Convert the response to a CSV string
-        csv_data = io.StringIO()
-        csv_writer = csv.writer(csv_data)
-        csv_writer.writerow(['Response'])  # Header
-        
-        # Write each line as a separate row
-        for line in response_lines:
-            csv_writer.writerow([line])
-        
-        # Create response with CSV file
-        output = make_response(jsonify({
-            **result,
-            'csv_content': csv_data.getvalue(),
-            'filename': 'response.csv'
-        }))
-        output.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
-        return add_cors_headers(output)
-    
-    # Regular JSON response if not saving as CSV
-    response = make_response(jsonify(result))
-    response.set_cookie('session_active', 'true')
-    return add_cors_headers(response)
+    request_id = data.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
+    try:
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        import time
+        time.sleep(5)  # TEMPORARY DELAY FOR TESTING
+        system_prompt = data.get('system_prompt', '')
+        user_prompt = data.get('user_prompt', '')
+        save_as_csv = data.get('save_as_csv', False)
+        result = call_model(system_prompt, user_prompt)
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        if save_as_csv and result['success']:
+            response_lines = [line.strip() for line in result['response'].split('\n') if line.strip()]
+            csv_data = io.StringIO()
+            csv_writer = csv.writer(csv_data)
+            csv_writer.writerow(['Response'])
+            for line in response_lines:
+                csv_writer.writerow([line])
+            output = make_response(jsonify({
+                **result,
+                'csv_content': csv_data.getvalue(),
+                'filename': 'response.csv'
+            }))
+            output.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
+            return add_cors_headers(output)
+        response = make_response(jsonify(result))
+        response.set_cookie('session_active', 'true')
+        return add_cors_headers(response)
+    finally:
+        cleanup_request(request_id)
 
 @app.route('/api/call-model-with-source', methods=['POST', 'OPTIONS'])
 def api_call_model_with_source():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
     data = request.json
-    system_prompt = data.get('system_prompt', '')
-    user_prompt = data.get('user_prompt', '')
-    download_url = data.get('download_url', '')
-
-    if not download_url:
-        return add_cors_headers(jsonify({
-            "success": False,
-            "error": "No download URL provided"
-        })), 400
-
+    request_id = data.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
     try:
-        # Download the file content from the URL
-        response = requests.get(download_url)
-        response.raise_for_status()
-
-        # Check if it's a PDF by looking at content type or URL
-        is_pdf = ('application/pdf' in response.headers.get('Content-Type', '') or 
-                 download_url.lower().endswith('.pdf'))
-
-        if is_pdf:
-            # Read PDF content
-            pdf_file = io.BytesIO(response.content)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            processed_data = ""
-            for page in pdf_reader.pages:
-                processed_data += page.extract_text() + "\n"
-        else:
-            # Regular text content
-            processed_data = response.text
-
-        # Prepend the source context to system prompt
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        system_prompt = data.get('system_prompt', '')
+        user_prompt = data.get('user_prompt', '')
+        download_url = data.get('download_url', '')
+        if not download_url:
+            return add_cors_headers(jsonify({"success": False, "error": "No download URL provided"})), 400
+        try:
+            response = requests.get(download_url)
+            response.raise_for_status()
+            is_pdf = ('application/pdf' in response.headers.get('Content-Type', '') or download_url.lower().endswith('.pdf'))
+            if is_pdf:
+                pdf_file = io.BytesIO(response.content)
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                processed_data = ""
+                for page in pdf_reader.pages:
+                    processed_data += page.extract_text() + "\n"
+            else:
+                processed_data = response.text
+        except Exception as e:
+            return add_cors_headers(jsonify({"success": False, "error": f"Failed to download/process file: {str(e)}"})), 500
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         source_system_prompt = f"You are a helpful assistant. The user has given you the following source to use to answer questions. Please only use this source, and this source only, when helping the user. Source: {processed_data}\n\n{system_prompt}"
-        
         result = call_model(source_system_prompt, user_prompt)
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         response = make_response(jsonify(result))
         response.set_cookie('session_active', 'true')
         return add_cors_headers(response)
-
-    except requests.RequestException as e:
-        return jsonify({
-            "success": False,
-            "error": f"Failed to download file: {str(e)}"
-        }), 500
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": f"Failed to process file: {str(e)}"
-        }), 500
+    finally:
+        cleanup_request(request_id)
 
 @app.route('/oai', methods=['GET', 'OPTIONS'])
 def oai_route():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
-    system_prompt = request.args.get('system')
-    user_prompt = request.args.get('user')
-    sources = request.args.get('sources')
-
+    request_id = request.args.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
     try:
-        if not api_key:
-            return {
-                "response": "Please add your own API key to continue using the service.",
-                "success": False,
-                "needs_api_key": True
-            }
-
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        system_prompt = request.args.get('system')
+        user_prompt = request.args.get('user')
+        sources = request.args.get('sources')
         client = OpenAI(api_key=api_key)
-        
-        # Prepare context from sources
         context = ""
         if sources:
-            sources_dict = eval(sources)  # Convert string to dictionary
+            sources_dict = eval(sources)
             for name, data in sources_dict.items():
-                if name in user_prompt:  # Only include referenced sources
+                if name in user_prompt:
                     context += f"\nContent for {name}: {data}\n"
-        
-        # Modify the content to include context if it exists
         content = f"{system_prompt} {context} {user_prompt}" if context else f"{system_prompt} {user_prompt}"
-        
         response = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
+            messages=[{"role": "user", "content": content}],
             model="gpt-4",
         )
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         return add_cors_headers(jsonify({
             "response": response.choices[0].message.content,
             "success": True
         }))
     except Exception as e:
-        return {
-            "response": str(e),
-            "success": False
-        }
+        return add_cors_headers(jsonify({"error": str(e), "success": False})), 500
+    finally:
+        cleanup_request(request_id)
 
 @app.route('/api/check-api-key', methods=['GET', 'OPTIONS'])
 def check_api_key():
@@ -428,29 +414,22 @@ def get_count():
 def process_csv():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
+    data = request.json
+    request_id = data.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
     try:
-        data = request.json
-        print("Received request data:", data)
-        
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         file_path = data.get('filePath')
         filter_criteria = data.get('filterCriteria', [])
-        
-        print(f"Processing CSV with path: {file_path}")
-        print(f"Applying filters: {filter_criteria}")
-        
-        # Read the CSV
         df = pd.read_csv(file_path)
         original_count = len(df)
-        print(f"Original row count: {original_count}")
-        
-        # Apply each filter
         for criteria in filter_criteria:
             column = criteria['column']
             operator = criteria['operator']
             value = criteria['value']
-            
-            print(f"Applying filter: {column} {operator} {value}")
-            
             if operator == "equals":
                 df = df[df[column] == value]
             elif operator == "not equals":
@@ -465,15 +444,10 @@ def process_csv():
                 df = df[pd.to_numeric(df[column], errors='coerce') > float(value)]
             elif operator == "less than":
                 df = df[pd.to_numeric(df[column], errors='coerce') < float(value)]
-                
-            print(f"Rows remaining after filter: {len(df)}")
-
-        # Convert to different formats
-        processed_data = df.to_string()  # For prompts
-        raw_data = df.to_dict('records')  # For JSON
-        
-        print(f"Final row count: {len(df)}")
-        
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        processed_data = df.to_string()
+        raw_data = df.to_dict('records')
         response_data = {
             'success': True,
             'processedData': processed_data,
@@ -485,16 +459,11 @@ def process_csv():
                 'applied_filters': filter_criteria
             }
         }
-        print("Sending response:", response_data)
         return add_cors_headers(jsonify(response_data))
-        
     except Exception as e:
-        error_msg = f"Error processing CSV: {str(e)}"
-        print(error_msg)
-        return add_cors_headers(jsonify({
-            'success': False,
-            'error': error_msg
-        })), 500
+        return add_cors_headers(jsonify({'success': False, 'error': str(e)})), 500
+    finally:
+        cleanup_request(request_id)
 
 def send_checkin_email(to_email=None):
     """Sends a check-in notification email"""
@@ -527,30 +496,39 @@ Take a quick look and continue: https://notebook-mvp.vercel.app/"""
 def checkin_email():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
-    email = request.args.get('email')
-    print("Email being used:", email)  # Debug print
-    
-    response = send_checkin_email(email)
-    
-    if response and response.status_code == 200:
-        return add_cors_headers(jsonify({
-            "success": True,
-            "message": "Email sent successfully",
-            "sent_to": email or "default email"
-        }))
-    else:
-        return add_cors_headers(jsonify({
-            "success": False,
-            "error": "Failed to send email",
-            "status_code": response.status_code if response else None,
-            "details": response.text if response else "Failed to send email"
-        })), 500
+    request_id = request.args.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
+    try:
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        email = request.args.get('email')
+        response = send_checkin_email(email)
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        if response and response.status_code == 200:
+            return add_cors_headers(jsonify({
+                "success": True,
+                "message": "Email sent successfully",
+                "sent_to": email or "default email"
+            }))
+        else:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Failed to send email",
+                "status_code": response.status_code if response else None,
+                "details": response.text if response else "Failed to send email"
+            })), 500
+    finally:
+        cleanup_request(request_id)
 
 def perform_google_search(query: str = None, engine_type: str = "search", topic_token: str = None, section_token: str = None, window: str = None, trend: str = None, index_market: str = None, num: int = 10) -> dict:
     """Performs a Google search using SerpAPI"""
     try:
         params = {
-            "api_key": os.getenv('SERPAPI_KEY'),
+            # "api_key": os.getenv('SERPAPI_KEY'),
+            "api_key": "ec7d8f1da6798c955d5d6af9263843f98c18bd49b1fee485d7e3f25e4c3c1b0d",
             "gl": "us",
             "hl": "en"
         }
@@ -632,45 +610,62 @@ def search():
         return add_cors_headers(make_response()), 204
     if request.method == 'POST':
         data = request.json
-        query = data.get('query')
-        engine = data.get('engine', 'search')
-        topic_token = data.get('topic_token')
-        section_token = data.get('section_token')
-        window = data.get('window')
-        trend = data.get('trend')
-        index_market = data.get('index_market')
-        num = int(data.get('num', 10))  # Add this line
+        request_id = data.get('request_id')
     else:  # GET
-        query = request.args.get('q')
-        engine = request.args.get('engine', 'search')
-        topic_token = request.args.get('topic_token')
-        section_token = request.args.get('section_token')
-        window = request.args.get('window')
-        trend = request.args.get('trend')
-        index_market = request.args.get('index_market')
-        num = int(request.args.get('num', 10))  # Add this line
-    
-    if engine == "news" and not (query or topic_token):
+        request_id = request.args.get('request_id')
+    if not request_id:
         return add_cors_headers(jsonify({
             "success": False,
-            "error": "News search requires either a query or topic token"
+            "error": "Missing required field: 'request_id'"
         })), 400
-    elif engine in ["search", "finance"] and not query:
-        return add_cors_headers(jsonify({
-            "success": False,
-            "error": f"{engine} requires a query"
-        })), 400
-    elif engine == "markets" and not trend:
-        return add_cors_headers(jsonify({
-            "success": False,
-            "error": "Markets search requires a trend parameter"
-        })), 400
-        
-    result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market, num=num)
-    # Guarantee slicing here:
-    if "results" in result and isinstance(result["results"], list):
-        result["results"] = result["results"][:num]
-    return add_cors_headers(jsonify(result))
+    register_request(request_id)
+    print(f"Received search request with request_id: {request_id}")
+    try:
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            })), 499
+        import time
+        time.sleep(10)  # TEMPORARY DELAY FOR TESTING
+        if request.method == 'POST':
+            data = request.json
+            query = data.get('query')
+            engine = data.get('engine', 'search')
+            topic_token = data.get('topic_token')
+            section_token = data.get('section_token')
+            window = data.get('window')
+            trend = data.get('trend')
+            index_market = data.get('index_market')
+            num = int(data.get('num', 10))
+        else:  # GET
+            query = request.args.get('q')
+            engine = request.args.get('engine', 'search')
+            topic_token = request.args.get('topic_token')
+            section_token = request.args.get('section_token')
+            window = request.args.get('window')
+            trend = request.args.get('trend')
+            index_market = request.args.get('index_market')
+            num = int(request.args.get('num', 10))
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            })), 499
+        result = perform_google_search(query, engine, topic_token, section_token, window, trend, index_market, num=num)
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            })), 499
+        if "results" in result and isinstance(result["results"], list):
+            result["results"] = result["results"][:num]
+        return add_cors_headers(jsonify(result))
+    finally:
+        cleanup_request(request_id)
 
 def send_email(to_email, subject, body):
     """Sends an email using Mailgun API
@@ -708,27 +703,34 @@ def send_email(to_email, subject, body):
 def send_email_endpoint():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
+    if request.method == 'POST':
+        data = request.json
+        request_id = data.get('request_id')
+    else:
+        request_id = request.args.get('request_id')
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    register_request(request_id)
     try:
-        # Get parameters from either JSON body or URL parameters
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         if request.method == 'POST':
             data = request.json
             email = data.get('email')
             subject = data.get('subject')
             body = data.get('body')
-        else:  # GET
+        else:
             email = request.args.get('email')
             subject = request.args.get('subject')
             body = request.args.get('body')
-        
-        # Validate required fields
         if not all([email, subject, body]):
             return add_cors_headers(jsonify({
                 "success": False,
                 "error": "Missing required fields: email, subject, and body are required"
             })), 400
-            
         response = send_email(email, subject, body)
-        
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         if response and response.status_code == 200:
             return add_cors_headers(jsonify({
                 "success": True,
@@ -742,12 +744,10 @@ def send_email_endpoint():
                 "status_code": response.status_code if response else None,
                 "details": response.text if response else "Failed to send email"
             })), 500
-            
     except Exception as e:
-        return add_cors_headers(jsonify({
-            "success": False,
-            "error": str(e)
-        })), 500
+        return add_cors_headers(jsonify({"success": False, "error": str(e)})), 500
+    finally:
+        cleanup_request(request_id)
 
 # website processing stuff
 # initializings and functions 
@@ -1015,46 +1015,51 @@ def process_url():
     elif request.method == "POST":
         # Process and store a new URL
         data = request.json
-        user_id = data.get("user_id")
-        url = data.get("url")
-        nickname = data.get("nickname", None)
-
-        if not user_id or not url:
-            return add_cors_headers(jsonify({"error": "Missing required parameters"})), 400
-
-        print(f"Processing URL: {url}")
-        content = scrape_website(url)
-
-        if not content:
-            return add_cors_headers(jsonify({"error": "Failed to retrieve content"})), 500
-
-        chunks = chunk_text(content)
-        embeddings = get_embeddings(chunks)
-        storage_path = upload_to_firebase(user_id, url, chunks, embeddings, filename=nickname)
-
-        sanitized_url = sanitize_filename(url)
-        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
-
-        file_data = {
-            "created_at": datetime.utcnow().isoformat(),
-            "download_link": storage_path,
-            "file_type": "website",
-            "full_name": url,
-            "nickname": nickname or url,
-            "userID": user_id
-        }
-
-        if file_ref.get().exists:
-            file_ref.update(file_data)
-        else:
-            file_ref.set(file_data)
-
-        return add_cors_headers(jsonify({
-            "success": True,
-            "message": "URL processed successfully", 
-            "download_link": storage_path,
-            "content": content
-        }))
+        request_id = data.get('request_id')
+        if not request_id:
+            return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+        register_request(request_id)
+        try:
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+            user_id = data.get("user_id")
+            url = data.get("url")
+            nickname = data.get("nickname", None)
+            if not user_id or not url:
+                return add_cors_headers(jsonify({"error": "Missing required parameters"})), 400
+            print(f"Processing URL: {url}")
+            content = scrape_website(url)
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+            if not content:
+                return add_cors_headers(jsonify({"error": "Failed to retrieve content"})), 500
+            chunks = chunk_text(content)
+            embeddings = get_embeddings(chunks)
+            storage_path = upload_to_firebase(user_id, url, chunks, embeddings, filename=nickname)
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+            sanitized_url = sanitize_filename(url)
+            file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+            file_data = {
+                "created_at": datetime.utcnow().isoformat(),
+                "download_link": storage_path,
+                "file_type": "website",
+                "full_name": url,
+                "nickname": nickname or url,
+                "userID": user_id
+            }
+            if file_ref.get().exists:
+                file_ref.update(file_data)
+            else:
+                file_ref.set(file_data)
+            return add_cors_headers(jsonify({
+                "success": True,
+                "message": "URL processed successfully", 
+                "download_link": storage_path,
+                "content": content
+            }))
+        finally:
+            cleanup_request(request_id)
 
 @app.route("/api/answer_with_rag", methods=["GET", "POST", "OPTIONS"])
 def answer_with_rag():
@@ -1085,71 +1090,59 @@ def answer_with_rag():
     elif request.method == "POST":
         try:
             data = request.json
-            user_id = data.get("user_id")
-            url = data.get("url")
-            user_query = data.get("query")
-
-            if not user_id or not url or not user_query:
+            request_id = data.get('request_id')
+            if not request_id:
+                return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+            register_request(request_id)
+            try:
+                if is_request_cancelled(request_id):
+                    return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+                user_id = data.get("user_id")
+                url = data.get("url")
+                user_query = data.get("query")
+                if not user_id or not url or not user_query:
+                    return add_cors_headers(jsonify({"error": "Missing required parameters"})), 400
+                if url.startswith("gs://"):
+                    try:
+                        chunks, embeddings = load_embeddings_from_firebase(url)
+                    except Exception as e:
+                        print(f"Error loading from storage URL: {str(e)}")
+                        return add_cors_headers(jsonify({"success": False, "error": f"Failed to load embeddings: {str(e)}"})), 500
+                else:
+                    sanitized_url = sanitize_filename(url)
+                    file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
+                    file_data = file_ref.get().to_dict()
+                    if not file_data or "download_link" not in file_data:
+                        return add_cors_headers(jsonify({"success": False, "error": "No embeddings found for this URL"})), 404
+                    chunks, embeddings = load_embeddings_from_firebase(file_data["download_link"])
+                relevant_chunks = retrieve_top_chunks(user_query, chunks, embeddings)
+                if is_request_cancelled(request_id):
+                    return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+                system_prompt = (
+                    "You are an AI assistant that strictly answers user questions based only on the provided context.\n"
+                    "Do not use any external knowledge or make assumptions. If the answer is not in the provided context, "
+                    "reply with 'I don't have enough information to answer that based on the provided data.'\n\n"
+                    f"Context:\n{relevant_chunks}"
+                )
+                response = client.chat.completions.create(
+                    model="gpt-4-turbo",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_query}
+                    ],
+                    max_tokens=300
+                )
+                if is_request_cancelled(request_id):
+                    return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
                 return add_cors_headers(jsonify({
-                    "error": "Missing required parameters"
-                })), 400
-
-            # If the URL is a storage URL, use it directly to load embeddings
-            if url.startswith("gs://"):
-                try:
-                    # Load chunks and embeddings directly from the storage URL
-                    chunks, embeddings = load_embeddings_from_firebase(url)
-                except Exception as e:
-                    print(f"Error loading from storage URL: {str(e)}")
-                    return add_cors_headers(jsonify({
-                        "success": False,
-                        "error": f"Failed to load embeddings: {str(e)}"
-                    })), 500
-            else:
-                # Original flow using Firestore document
-                sanitized_url = sanitize_filename(url)
-                file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_url)
-                file_data = file_ref.get().to_dict()
-
-                if not file_data or "download_link" not in file_data:
-                    return add_cors_headers(jsonify({
-                        "success": False,
-                        "error": "No embeddings found for this URL"
-                    })), 404
-
-                chunks, embeddings = load_embeddings_from_firebase(file_data["download_link"])
-            
-            # Get relevant chunks
-            relevant_chunks = retrieve_top_chunks(user_query, chunks, embeddings)
-
-            # Generate response using GPT-4
-            system_prompt = (
-                "You are an AI assistant that strictly answers user questions based only on the provided context.\n"
-                "Do not use any external knowledge or make assumptions. If the answer is not in the provided context, "
-                "reply with 'I don't have enough information to answer that based on the provided data.'\n\n"
-                f"Context:\n{relevant_chunks}"
-            )
-
-            response = client.chat.completions.create(
-                model="gpt-4-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_query}
-                ],
-                max_tokens=300
-            )
-            
-            return add_cors_headers(jsonify({
-                "success": True,
-                "response": response.choices[0].message.content.strip()
-            }))
-
+                    "success": True,
+                    "response": response.choices[0].message.content.strip()
+                }))
+            finally:
+                cleanup_request(request_id)
         except Exception as e:
             print(f"Error in answer_with_rag: {str(e)}")
-            return add_cors_headers(jsonify({
-                "success": False,
-                "error": str(e)
-            })), 500
+            return add_cors_headers(jsonify({"success": False, "error": str(e)})), 500
 
 @app.route('/api/run_code_local', methods=['POST', 'OPTIONS'])
 def run_code_local():
@@ -1519,10 +1512,12 @@ def excel_agent():
         if request.method == 'POST':
             data = request.json
             prompt = data.get('prompt')
-            user_id = data.get('user_id')  # Add user_id parameter
+            user_id = data.get('user_id')
+            request_id = data.get('request_id')
         else:
             prompt = request.args.get('prompt')
-            user_id = request.args.get('user_id')  # Add user_id parameter
+            user_id = request.args.get('user_id')
+            request_id = request.args.get('request_id')
 
         if not prompt:
             return add_cors_headers(jsonify({
@@ -1536,89 +1531,115 @@ def excel_agent():
                 "error": "Missing required field: 'user_id' is required"
             })), 400
 
-        print("📝 Received prompt:", prompt)
-        print("👤 User ID:", user_id)
-        
-        # Generate and run the code
-        result = generate_and_run_code_from_prompt(prompt)
-        print("🔍 Generation result:", result)
-        
-        generated_code = result.get("code", "")
-        print("📦 Generated code:\n", generated_code)
-
-        if not result.get("success"):
-            print("❌ Code generation failed:", result.get("error"))
-            return add_cors_headers(jsonify(result)), 500
-
-        # Define the expected output path
-        # Local version (comment out for production)
-        # expected_output_path = os.path.join("/Users/sahilsinha/Documents/caio/test_backend", "output.xlsx")
-        
-        # Production version (uncomment for deployment)
-        expected_output_path = os.path.join(os.getcwd(), "output.xlsx")
-        print("🔍 Looking for file at:", expected_output_path)
-
-        if not os.path.exists(expected_output_path):
-            error_msg = f"Expected Excel file not found at: {expected_output_path}"
-            print("❌", error_msg)
+        if not request_id:
             return add_cors_headers(jsonify({
                 "success": False,
-                "error": error_msg,
-                "debug_info": {
-                    "generated_code": generated_code,
-                    "working_directory": os.getcwd()
-                }
-            })), 500
+                "error": "Missing required field: 'request_id' is required"
+            })), 400
 
-        # Upload Excel file to Firebase
-        print("📤 Uploading Excel file to Firebase...")
-        storage_path = upload_excel_to_firebase(user_id, expected_output_path)
-        
-        # Generate download URL
-        download_url = get_firebase_download_url(storage_path)
-        
-        if not download_url:
-            return add_cors_headers(jsonify({
-                "success": False,
-                "error": "Failed to generate download URL"
-            })), 500
-
-        # Store metadata in Firestore
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        sanitized_filename = f"excel_{timestamp}"
-        
-        file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_filename)
-        file_data = {
-            "created_at": datetime.utcnow().isoformat(),
-            "download_link": storage_path,
-            "file_type": "excel",
-            "full_name": f"Generated Excel - {prompt[:50]}...",
-            "nickname": f"Excel Spreadsheet",
-            "userID": user_id,
-            "prompt": prompt
-        }
-
-        if file_ref.get().exists:
-            file_ref.update(file_data)
-        else:
-            file_ref.set(file_data)
-
-        # Clean up local file
+        register_request(request_id)
         try:
-            os.remove(expected_output_path)
-            print(f"🧹 Deleted local file: {expected_output_path}")
-        except Exception as e:
-            print(f"⚠️ Failed to delete local file: {e}")
+            print("📝 Received prompt:", prompt)
+            print("👤 User ID:", user_id)
+            print("🆔 Request ID:", request_id)
 
-        print(f"✅ Successfully uploaded Excel file and generated download URL")
-        
-        return add_cors_headers(jsonify({
-            "success": True,
-            "download_url": download_url,
-            "storage_path": storage_path,
-            "message": "Done! Here's the link to your spreadsheet -"
-        }))
+            # Check for cancellation before each major step
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": "Request was cancelled",
+                    "cancelled": True
+                })), 499
 
+            result = generate_and_run_code_from_prompt(prompt)
+            print("🔍 Generation result:", result)
+
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": "Request was cancelled",
+                    "cancelled": True
+                })), 499
+
+            generated_code = result.get("code", "")
+            print("📦 Generated code:\n", generated_code)
+
+            if not result.get("success"):
+                print("❌ Code generation failed:", result.get("error"))
+                return add_cors_headers(jsonify(result)), 500
+
+            # Check for cancellation before file operations
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": "Request was cancelled",
+                    "cancelled": True
+                })), 499
+
+            expected_output_path = os.path.join(os.getcwd(), "output.xlsx")
+            print("🔍 Looking for file at:", expected_output_path)
+
+            if not os.path.exists(expected_output_path):
+                error_msg = f"Expected Excel file not found at: {expected_output_path}"
+                print("❌", error_msg)
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": error_msg,
+                    "debug_info": {
+                        "generated_code": generated_code,
+                        "working_directory": os.getcwd()
+                    }
+                })), 500
+
+            # Check for cancellation before Firebase upload
+            if is_request_cancelled(request_id):
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": "Request was cancelled",
+                    "cancelled": True
+                })), 499
+
+            print("📤 Uploading Excel file to Firebase...")
+            storage_path = upload_excel_to_firebase(user_id, expected_output_path)
+            download_url = get_firebase_download_url(storage_path)
+
+            if not download_url:
+                return add_cors_headers(jsonify({
+                    "success": False,
+                    "error": "Failed to generate download URL"
+                })), 500
+
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            sanitized_filename = f"excel_{timestamp}"
+            file_ref = db.collection("users").document(user_id).collection("files").document(sanitized_filename)
+            file_data = {
+                "created_at": datetime.utcnow().isoformat(),
+                "download_link": storage_path,
+                "file_type": "excel",
+                "full_name": f"Generated Excel - {prompt[:50]}...",
+                "nickname": f"Excel Spreadsheet",
+                "userID": user_id,
+                "prompt": prompt
+            }
+            if file_ref.get().exists:
+                file_ref.update(file_data)
+            else:
+                file_ref.set(file_data)
+            try:
+                os.remove(expected_output_path)
+                print(f"🧹 Deleted local file: {expected_output_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete local file: {e}")
+            print(f"✅ Successfully uploaded Excel file and generated download URL")
+            return add_cors_headers(jsonify({
+                "success": True,
+                "download_url": download_url,
+                "storage_path": storage_path,
+                "message": "Done! Here's the link to your spreadsheet -",
+                "request_id": request_id
+            }))
+        finally:
+            cleanup_request(request_id)
     except Exception as e:
         print("❌ Unexpected error:", str(e))
         print("📜 Traceback:", traceback.format_exc())
@@ -2462,96 +2483,153 @@ def extract_message_and_search_results(response):
     }
 
 # # API route
-@app.route("/ask", methods=["POST"])
+@app.route("/deepresearch", methods=["POST"])
 def ask():
     data = request.get_json()
-    print("Received request data:", data)  # Log incoming request data
+    request_id = data.get("request_id")
+    if not request_id:
+        return jsonify({"error": "Missing 'request_id' in request body"}), 400
 
-    # Validate input
-    if not data or "prompt" not in data:
-        return jsonify({"error": "Missing 'prompt' in request body"}), 400
-
-    user_prompt = data["prompt"]
-    search_engine = data["search_engine"]
-
+    register_request(request_id)
     try:
-        if search_engine == "perplexity":
-            print("Using Perplexity search engine")
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an artificial intelligence assistant and you need to "
-                        "engage in a helpful, detailed, polite conversation with a user."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ]
+        # Check for cancellation before starting
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
 
-            print("Making Perplexity API call...")
-            response = research_client.chat.completions.create(
-                model="sonar-pro",
-                messages=messages,
-            )
-            print("Raw Perplexity response:", response)
+        user_prompt = data["prompt"]
+        search_engine = data["search_engine"]
 
-            result = extract_message_and_search_results(response)
-            print("Processed result:", result)
+        try:
+            if search_engine == "perplexity":
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an artificial intelligence assistant and you need to "
+                            "engage in a helpful, detailed, polite conversation with a user."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ]
 
-            # Add explicit CORS headers to response
-            response = jsonify(result)
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            return response
+                # Check for cancellation before API call
+                if is_request_cancelled(request_id):
+                    return jsonify({
+                        "success": False,
+                        "error": "Request was cancelled",
+                        "cancelled": True
+                    }), 499
 
-        elif search_engine == "firecrawl":
-            print("Using Firecrawl search engine")
-            response = firecrawl_client.search(user_prompt)
-            print("Raw Firecrawl response:", response)
-            
-            result = {
-                "message": response.get('success', False),
-                "search_results": response.get('data', [])
-            }
-            print("Processed result:", result)
-            return jsonify(result)
+                response = research_client.chat.completions.create(
+                    model="sonar-pro",
+                    messages=messages,
+                )
 
-    except Exception as e:
-        print("Error occurred:", str(e))
-        print("Full traceback:", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+                # Check for cancellation after API call
+                if is_request_cancelled(request_id):
+                    return jsonify({
+                        "success": False,
+                        "error": "Request was cancelled",
+                        "cancelled": True
+                    }), 499
+
+                result = extract_message_and_search_results(response)
+                response = jsonify(result)
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                return response
+
+            elif search_engine == "firecrawl":
+                # Check for cancellation before API call
+                if is_request_cancelled(request_id):
+                    return jsonify({
+                        "success": False,
+                        "error": "Request was cancelled",
+                        "cancelled": True
+                    }), 499
+                response = firecrawl_client.search(user_prompt)
+                # Check for cancellation after API call
+                if is_request_cancelled(request_id):
+                    return jsonify({
+                        "success": False,
+                        "error": "Request was cancelled",
+                        "cancelled": True
+                    }), 499
+                result = {
+                    "message": response.get('success', False),
+                    "search_results": response.get('data', [])
+                }
+                return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    finally:
+        cleanup_request(request_id)
 
 @app.route("/scrape", methods=["POST"])
 def scrape():
     data = request.get_json()
+    request_id = data.get("request_id")
+    if not request_id:
+        return jsonify({"error": "Missing 'request_id' in request body"}), 400
 
-    # Validate input
-    if not data or "url" not in data:
-        return jsonify({"error": "Missing 'url' in request body"}), 400
-
-    url = data["url"]
-    prompt = data.get("prompt")  # Optional parameter
-
-    # Validate URL format
+    print(f"Received scrape request with request_id: {request_id}")
+    register_request(request_id)
     try:
-        result = urlparse(url)
-        if not all([result.scheme, result.netloc]):
-            return jsonify({"error": "URL isn't valid try again"}), 400
-    except Exception:
-        return jsonify({"error": "URL isn't valid try again"}), 400
+        # Check for cancellation before starting
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
 
-    try:
-        # Get scraped content and ensure it's a dictionary
-        scrape_result = scrape_website(url)
-        print("Scrape result type:", type(scrape_result))  # Debug print
-        print("Scrape result:", scrape_result)  # Debug print
+        import time
+        time.sleep(5)  # TEMPORARY DELAY FOR TESTING
+
+        if not data or "url" not in data:
+            return jsonify({"error": "Missing 'url' in request body"}), 400
+
+        url = data["url"]
+        prompt = data.get("prompt")  # Optional parameter
         
-        # If no prompt, return scrape result as is
+        # Validate URL format
+        try:
+            result = urlparse(url)
+            if not all([result.scheme, result.netloc]):
+                return jsonify({"error": "URL isn't valid try again"}), 400
+        except Exception:
+            return jsonify({"error": "URL isn't valid try again"}), 400
+
+        # Check for cancellation before scraping
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
+
+        try:
+            scrape_result = scrape_website(url)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+        # Check for cancellation after scraping
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
+
         if not prompt:
             return jsonify(scrape_result)
-        
+
         # If prompt exists, analyze the content
         messages = [
             {
@@ -2565,26 +2643,41 @@ def scrape():
             },
             {
                 "role": "user",
-                "content": f"Content to analyze: {scrape_result}\n\nQuestion: {prompt}",  # Changed this line to use the whole content
+                "content": f"Content to analyze: {scrape_result}\n\nQuestion: {prompt}",
             },
         ]
 
-        response = research_client.chat.completions.create(
-            model="sonar-pro",
-            messages=messages,
-            timeout=30
-        )
+        # Check for cancellation before LLM analysis
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
 
-        # Return both the original scrape result and the analysis
+        try:
+            response = research_client.chat.completions.create(
+                model="sonar-pro",
+                messages=messages,
+                timeout=30
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+        # Check for cancellation after LLM analysis
+        if is_request_cancelled(request_id):
+            return jsonify({
+                "success": False,
+                "error": "Request was cancelled",
+                "cancelled": True
+            }), 499
+
         return jsonify({
             "markdown": scrape_result,
             "analysis": response.choices[0].message.content
         })
-
-    except Exception as e:
-        print("Error occurred:", str(e))
-        print("Full traceback:", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+    finally:
+        cleanup_request(request_id)
 
 @app.route('/api/apollo_enrich', methods=['POST', 'OPTIONS'])
 def apollo_enrich():
@@ -2658,6 +2751,60 @@ def apollo_enrich():
             "success": False,
             "error": str(e)
         })), 500
+
+@app.route('/api/cancel-request', methods=['POST', 'OPTIONS'])
+def cancel_request_endpoint():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+
+    try:
+        data = request.json
+        request_id = data.get('request_id')
+        if not request_id:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing required field: 'request_id'"
+            })), 400
+
+        cancelled = cancel_request(request_id)
+        return add_cors_headers(jsonify({
+            "success": True,
+            "cancelled": cancelled,
+            "message": "Request cancelled successfully" if cancelled else "Request not found"
+        }))
+    except Exception as e:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": str(e)
+        })), 500
+
+# --- Request Cancellation Infrastructure ---
+active_requests = {}
+request_lock = threading.Lock()
+
+def register_request(request_id):
+    with request_lock:
+        active_requests[request_id] = {
+            'started_at': datetime.utcnow(),
+            'cancelled': False
+        }
+
+def cancel_request(request_id):
+    print(f"Cancelling request: {request_id}")
+    print("Current running requests:", list(active_requests.keys()))
+    with request_lock:
+        if request_id in active_requests:
+            active_requests[request_id]['cancelled'] = True
+            return True
+        return False
+
+def is_request_cancelled(request_id):
+    with request_lock:
+        return active_requests.get(request_id, {}).get('cancelled', False)
+
+def cleanup_request(request_id):
+    with request_lock:
+        active_requests.pop(request_id, None)
 
 if __name__ == '__main__':
     # Local version (comment out for production)
