@@ -32,7 +32,6 @@ matplotlib.use('Agg')  # Add this line at the top
 import threading
 
 load_dotenv()
-print("Loaded SERPAPI_KEY:", os.getenv('SERPAPI_KEY'))
 app = Flask(__name__)
 
 # Configure CORS with more specific settings
@@ -527,8 +526,8 @@ def perform_google_search(query: str = None, engine_type: str = "search", topic_
     """Performs a Google search using SerpAPI"""
     try:
         params = {
-            # "api_key": os.getenv('SERPAPI_KEY'),
-            "api_key": "ec7d8f1da6798c955d5d6af9263843f98c18bd49b1fee485d7e3f25e4c3c1b0d",
+            "api_key": os.getenv('SERPAPI_KEY'),
+            # "api_key": "ec7d8f1da6798c955d5d6af9263843f98c18bd49b1fee485d7e3f25e4c3c1b0d",
             "gl": "us",
             "hl": "en"
         }
@@ -2470,106 +2469,7 @@ def catch_all(path):
         "available_routes": [str(rule) for rule in app.url_map.iter_rules()]
     })), 404
 
-research_client = OpenAI(api_key=os.getenv("PERPLEXITY_API_KEY"), base_url="https://api.perplexity.ai")
-# Extractor function
-def extract_message_and_search_results(response):
-    message = response.choices[0].message.content
-    search_results = []
-    if hasattr(response, "search_results"):
-        search_results = response.search_results
-    return {
-        "message": message,
-        "search_results": search_results
-    }
 
-# # API route
-@app.route("/deepresearch", methods=["POST"])
-def ask():
-    data = request.get_json()
-    request_id = data.get("request_id")
-    if not request_id:
-        return jsonify({"error": "Missing 'request_id' in request body"}), 400
-
-    register_request(request_id)
-    try:
-        # Check for cancellation before starting
-        if is_request_cancelled(request_id):
-            return jsonify({
-                "success": False,
-                "error": "Request was cancelled",
-                "cancelled": True
-            }), 499
-
-        user_prompt = data["prompt"]
-        search_engine = data["search_engine"]
-
-        try:
-            if search_engine == "perplexity":
-                messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an artificial intelligence assistant and you need to "
-                            "engage in a helpful, detailed, polite conversation with a user."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt,
-                    },
-                ]
-
-                # Check for cancellation before API call
-                if is_request_cancelled(request_id):
-                    return jsonify({
-                        "success": False,
-                        "error": "Request was cancelled",
-                        "cancelled": True
-                    }), 499
-
-                response = research_client.chat.completions.create(
-                    model="sonar-deep-research",
-                    messages=messages,
-                )
-
-                # Check for cancellation after API call
-                if is_request_cancelled(request_id):
-                    return jsonify({
-                        "success": False,
-                        "error": "Request was cancelled",
-                        "cancelled": True
-                    }), 499
-
-                result = extract_message_and_search_results(response)
-                response = jsonify(result)
-                response.headers.add('Access-Control-Allow-Origin', '*')
-                return response
-
-            elif search_engine == "firecrawl":
-                # Check for cancellation before API call
-                if is_request_cancelled(request_id):
-                    return jsonify({
-                        "success": False,
-                        "error": "Request was cancelled",
-                        "cancelled": True
-                    }), 499
-                response = firecrawl_client.search(user_prompt)
-                # Check for cancellation after API call
-                if is_request_cancelled(request_id):
-                    return jsonify({
-                        "success": False,
-                        "error": "Request was cancelled",
-                        "cancelled": True
-                    }), 499
-                result = {
-                    "message": response.get('success', False),
-                    "search_results": response.get('data', [])
-                }
-                return jsonify(result)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    finally:
-        cleanup_request(request_id)
 
 @app.route("/scrape", methods=["POST"])
 def scrape():
