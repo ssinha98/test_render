@@ -2866,7 +2866,7 @@ def test_responses():
 from datetime import datetime  # (already imported at top)
 
 # 1. Start Deep Research (POST)
-@app.route('/api/opai_deep_research', methods=['POST', 'OPTIONS'])
+@app.route('/api/start_deep_research', methods=['POST', 'OPTIONS'])
 def start_deep_research():
     if request.method == "OPTIONS":
         return add_cors_headers(make_response()), 204
@@ -2884,10 +2884,9 @@ def start_deep_research():
                 "error": "Missing required fields: 'prompt', 'user_id', 'request_id'"
             })), 400
 
-        # Prepare OpenAI Deep Research API call
+        # Make request to OpenAI Deep Research API
         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         url = "https://api.openai.com/v1/responses"
-        # webhook_url = "https://test-render-q8l2.onrender.com/api/deep-research-callback"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {OPENAI_API_KEY}"
@@ -2898,15 +2897,15 @@ def start_deep_research():
             "tools": [
                 { "type": "web_search_preview" }
             ],
-            "background": True
+            "background": True,
         }
+
         api_response = requests.post(url, headers=headers, json=payload)
         try:
             response_data = api_response.json()
         except Exception:
-            response_data = api_response.text
+            response_data = {"raw": api_response.text}
 
-        # Extract thread_id from OpenAI response
         thread_id = response_data.get("id") or response_data.get("thread_id")
         if not thread_id:
             return add_cors_headers(jsonify({
@@ -2922,6 +2921,7 @@ def start_deep_research():
             "created_at": datetime.utcnow().isoformat(),
             "prompt": prompt
         }
+
         if variable:
             db.collection("users").document(user_id).collection("variables").document(variable).set(doc_data)
         else:
@@ -2931,110 +2931,142 @@ def start_deep_research():
             "success": True,
             "thread_id": thread_id
         }))
+
     except Exception as e:
         return add_cors_headers(jsonify({
             "success": False,
             "error": str(e)
         })), 500
 
-# 2. Webhook Callback (POST)
-def extract_deep_research_results(openai_response):
-    main_text = None
-    urls = set()
-    # Find the assistant message with output_text
-    for item in openai_response.get("output", []):
-        if item.get("type") == "message" and item.get("role") == "assistant":
-            for content in item.get("content", []):
-                if content.get("type") == "output_text":
-                    main_text = content.get("text")
-                    # Extract URLs from annotations if present
-                    for annotation in content.get("annotations", []):
-                        if annotation.get("type") == "url_citation" and annotation.get("url"):
-                            urls.add(annotation["url"])
-    # Extract URLs from all actions
-    for item in openai_response.get("output", []):
-        if item.get("type") == "web_search_call":
-            action = item.get("action", {})
-            url = action.get("url")
-            if url:
-                urls.add(url)
-    # Remove None/empty URLs
-    urls = [u for u in urls if u]
-    return {
-        "text": main_text,
-        "urls": urls
-    }
-
 @app.route('/api/deep-research-callback', methods=['POST'])
 def deep_research_callback():
     try:
-        payload = request.json
-        # --- PATCH START ---
-        thread_id = None
-        if "data" in payload and isinstance(payload["data"], dict) and "id" in payload["data"]:
-            thread_id = payload["data"]["id"]
+        # Verify webhook signature using OpenAI client
+        webhook_secret = os.getenv('OPENAI_WEBHOOK_SECRET')
+        if not webhook_secret:
+            print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
+            event = request.get_json()
         else:
-            thread_id = payload.get("id") or payload.get("thread_id")
-        # --- PATCH END ---
-        if not thread_id:
-            return jsonify({"success": False, "error": "No thread_id in webhook payload"}), 400
+            # Create client with webhook secret for signature verification
+            webhook_client = OpenAI(webhook_secret=webhook_secret)
+            try:
+                event = webhook_client.webhooks.unwrap(request.data, request.headers)
+            except Exception as e:
+                print(f"❌ Invalid webhook signature: {e}")
+                return Response("Invalid signature", status=400)
 
-        # Fetch result from OpenAI
+        print("✅ Webhook received from OpenAI:")
+        print(f"Event type: {event.get('type')}")
+        print(f"Event data: {event.get('data')}")
+
+        # Handle response.completed event
+        if event.get('type') == 'response.completed':
+            response_id = event.get('data', {}).get('id')
+            if response_id:
+                print(f"🎉 Deep research completed for response_id: {response_id}")
+                
+                # Optional: Auto-finalize the result
+                # You could automatically call the finalize logic here
+                # or just log it and let the frontend call finalize_deep_result
+                
+        # Save webhook event to Firebase for debugging
+        from uuid import uuid4
+        db.collection("webhook_events").document(str(uuid4())).set({
+            "received_at": datetime.utcnow().isoformat(),
+            "event_type": event.get('type'),
+            "response_id": event.get('data', {}).get('id'),
+            "full_event": event
+        })
+
+        return Response(status=200)
+        
+    except Exception as e:
+        print(f"❌ Webhook error: {str(e)}")
+        return Response(f"Webhook error: {str(e)}", status=500)
+
+@app.route('/api/finalize_deep_result', methods=['POST'])
+def finalize_deep_result():
+    try:
+        data = request.json
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Missing thread_id"
+            })), 400
+
+        # Retrieve the result from OpenAI using direct API call
         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         url = f"https://api.openai.com/v1/responses/{thread_id}"
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}"
         }
+        
         api_response = requests.get(url, headers=headers)
         try:
             response_data = api_response.json()
         except Exception:
-            response_data = api_response.text
+            response_data = {"raw": api_response.text}
 
-        # Extract main answer text and URLs
-        extracted = extract_deep_research_results(response_data)
-        result_text = extracted["text"]
-        result_urls = extracted["urls"]
+        if api_response.status_code != 200:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "Failed to retrieve result from OpenAI",
+                "response": response_data
+            })), 500
 
-        # Extract result (customize as needed)
-        result = response_data.get("output") or response_data.get("result") or response_data
+        # Extract main text and URLs from the response
+        main_text = None
+        urls = set()
+        
+        output = response_data.get("output", [])
+        for item in output:
+            if item.get("type") == "message" and item.get("role") == "assistant":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        main_text = content.get("text")
+                        for ann in content.get("annotations", []):
+                            if ann.get("type") == "url_citation" and ann.get("url"):
+                                urls.add(ann["url"])
+            elif item.get("type") == "web_search_call":
+                url = item.get("action", {}).get("url")
+                if url:
+                    urls.add(url)
 
-        # Find and update in Firebase (search both locations)
+        update_data = {
+            "status": "complete",
+            "result": response_data,
+            "result_text": main_text,
+            "result_urls": list(urls),
+            "value": main_text,
+            "completed_at": datetime.utcnow().isoformat()
+        }
+
+        # Update matching document in either collection
         updated = False
         users_ref = db.collection("users")
         for user_doc in users_ref.stream():
             user_id = user_doc.id
-            # Check variables
-            vars_ref = users_ref.document(user_id).collection("variables")
-            for var_doc in vars_ref.stream():
-                if var_doc.to_dict().get("thread_id") == thread_id:
-                    vars_ref.document(var_doc.id).update({
-                        "status": "complete",
-                        "result": result,
-                        "result_text": result_text,
-                        "result_urls": result_urls,
-                        "completed_at": datetime.utcnow().isoformat()
-                    })
-                    updated = True
-            # Check deep_research_calls
-            drc_ref = users_ref.document(user_id).collection("deep_research_calls")
-            for drc_doc in drc_ref.stream():
-                if drc_doc.to_dict().get("thread_id") == thread_id:
-                    drc_ref.document(drc_doc.id).update({
-                        "status": "complete",
-                        "result": result,
-                        "result_text": result_text,
-                        "result_urls": result_urls,
-                        "completed_at": datetime.utcnow().isoformat()
-                    })
-                    updated = True
+            for coll in ["variables", "deep_research_calls"]:
+                col_ref = users_ref.document(user_id).collection(coll)
+                for doc in col_ref.stream():
+                    if doc.to_dict().get("thread_id") == thread_id:
+                        col_ref.document(doc.id).update(update_data)
+                        updated = True
 
-        if not updated:
-            return jsonify({"success": False, "error": "thread_id not found in Firebase"}), 404
+        if updated:
+            return add_cors_headers(jsonify({"success": True}))
+        else:
+            return add_cors_headers(jsonify({
+                "success": False,
+                "error": "thread_id not found"
+            })), 404
 
-        return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": str(e)
+        })), 500
 
 # 3. Fetch Result (GET)
 @app.route('/api/get_deep_result', methods=['GET'])
