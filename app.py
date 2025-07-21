@@ -2862,9 +2862,6 @@ def test_responses():
         })), 500
 
 # --- Deep Research Async Integration ---
-
-from datetime import datetime  # (already imported at top)
-
 # 1. Start Deep Research (POST)
 @app.route('/api/start_deep_research', methods=['POST', 'OPTIONS'])
 def start_deep_research():
@@ -2937,14 +2934,14 @@ def start_deep_research():
             "success": False,
             "error": str(e)
         })), 500
-
+    
+    # ✅ Updated `/api/deep-research-callback`
 @app.route('/api/deep-research-callback', methods=['POST'])
 def deep_research_callback():
     try:
         webhook_secret = os.getenv('OPENAI_WEBHOOK_SECRET')
-        
+
         if webhook_secret:
-            # Create a temporary client with webhook secret for verification
             webhook_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), webhook_secret=webhook_secret)
             try:
                 event = webhook_client.webhooks.unwrap(request.data, request.headers)
@@ -2952,50 +2949,92 @@ def deep_research_callback():
                 print("Invalid signature", e)
                 return Response("Invalid signature", status=400)
         else:
-            print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
             event = request.get_json()
 
-        print("✅ Webhook received from OpenAI:")
-        print(f"Event type: {event.type}")
-        print(f"Event data: {event.data}")
+        thread_id = event.data.id if hasattr(event.data, 'id') else event.get("data", {}).get("id")
+        status = event.type
 
-        if event.type == "response.completed":
-            response_id = event.data.id
-            print(f"🎉 Deep research completed for response_id: {response_id}")
-            
-            # Optional: Auto-retrieve and log the response
-            try:
-                response = client.responses.retrieve(response_id)
-                print("Response status:", response.status)
-                # Extract main text like we did in the test
-                main_text = None
-                if hasattr(response, 'output') and response.output:
-                    for item in response.output:
-                        if hasattr(item, 'content'):
-                            for content in item.content:
-                                if hasattr(content, 'text'):
-                                    main_text = content.text
-                                    break
-                            if main_text:
-                                break
-                print("Response text preview:", main_text[:200] + "..." if main_text and len(main_text) > 200 else main_text)
-            except Exception as e:
-                print(f"Error retrieving response: {e}")
+        # Find matching document
+        updated = False
+        users_ref = db.collection("users")
+        for user_doc in users_ref.stream():
+            user_id = user_doc.id
+            ref = users_ref.document(user_id).collection("deep_research_calls")
+            for doc in ref.stream():
+                if doc.to_dict().get("thread_id") == thread_id:
+                    update_data = {
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "status": "complete" if status == "response.completed" else "error"
+                    }
+                    if status == "response.failed":
+                        update_data["error_msg"] = "OpenAI marked this request as failed"
+                    ref.document(doc.id).update(update_data)
+                    updated = True
 
-        # Save webhook event to Firebase for debugging
-        from uuid import uuid4
-        db.collection("webhook_events").document(str(uuid4())).set({
-            "received_at": datetime.utcnow().isoformat(),
-            "event_type": event.type,
-            "response_id": event.data.id if hasattr(event.data, 'id') else None,
-            "full_event": str(event)  # Convert to string for JSON serialization
-        })
+        return Response(status=200 if updated else 404)
 
-        return Response(status=200)
-        
     except Exception as e:
-        print(f"❌ Webhook error: {str(e)}")
-        return Response(f"Webhook error: {str(e)}", status=500)
+        print(f"Webhook error: {e}")
+        return Response("Webhook error", status=500)
+
+# @app.route('/api/deep-research-callback', methods=['POST'])
+# def deep_research_callback():
+#     try:
+#         webhook_secret = os.getenv('OPENAI_WEBHOOK_SECRET')
+        
+#         if webhook_secret:
+#             # Create a temporary client with webhook secret for verification
+#             webhook_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), webhook_secret=webhook_secret)
+#             try:
+#                 event = webhook_client.webhooks.unwrap(request.data, request.headers)
+#             except InvalidWebhookSignatureError as e:
+#                 print("Invalid signature", e)
+#                 return Response("Invalid signature", status=400)
+#         else:
+#             print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
+#             event = request.get_json()
+
+#         print("✅ Webhook received from OpenAI:")
+#         print(f"Event type: {event.type}")
+#         print(f"Event data: {event.data}")
+
+#         if event.type == "response.completed":
+#             response_id = event.data.id
+#             print(f"🎉 Deep research completed for response_id: {response_id}")
+            
+#             # Optional: Auto-retrieve and log the response
+#             try:
+#                 response = client.responses.retrieve(response_id)
+#                 print("Response status:", response.status)
+#                 # Extract main text like we did in the test
+#                 main_text = None
+#                 if hasattr(response, 'output') and response.output:
+#                     for item in response.output:
+#                         if hasattr(item, 'content'):
+#                             for content in item.content:
+#                                 if hasattr(content, 'text'):
+#                                     main_text = content.text
+#                                     break
+#                             if main_text:
+#                                 break
+#                 print("Response text preview:", main_text[:200] + "..." if main_text and len(main_text) > 200 else main_text)
+#             except Exception as e:
+#                 print(f"Error retrieving response: {e}")
+
+#         # Save webhook event to Firebase for debugging
+#         from uuid import uuid4
+#         db.collection("webhook_events").document(str(uuid4())).set({
+#             "received_at": datetime.utcnow().isoformat(),
+#             "event_type": event.type,
+#             "response_id": event.data.id if hasattr(event.data, 'id') else None,
+#             "full_event": str(event)  # Convert to string for JSON serialization
+#         })
+
+#         return Response(status=200)
+        
+#     except Exception as e:
+#         print(f"❌ Webhook error: {str(e)}")
+#         return Response(f"Webhook error: {str(e)}", status=500)
 
 @app.route('/api/finalize_deep_result', methods=['POST'])
 def finalize_deep_result():
@@ -3115,6 +3154,41 @@ def get_deep_result():
                     return jsonify({"success": False, "error": "results aren't ready, check back later"}), 202
 
     return jsonify({"success": False, "error": "thread_id not found"}), 404
+
+@app.route('/test-retrieve-response', methods=['GET'])
+def test_retrieve_response():
+    try:
+        # Use the thread_id from your webhook
+        response_id = "resp_687eac86ecdc819abbf785f7ce0c110207c6df137d095cc2"
+        response = client.responses.retrieve(response_id)
+        print("=== RETRIEVED RESPONSE ===")
+        print(response)
+        
+        # Extract the main text like we did before
+        main_text = None
+        if hasattr(response, 'output') and response.output:
+            for item in response.output:
+                if hasattr(item, 'content'):
+                    for content in item.content:
+                        if hasattr(content, 'text'):
+                            main_text = content.text
+                            break
+                    if main_text:
+                        break
+        
+        return jsonify({
+            "success": True,
+            "response_id": response.id,
+            "status": response.status,
+            "main_text_preview": main_text[:500] + "..." if main_text and len(main_text) > 500 else main_text
+        })
+        
+    except Exception as e:
+        print(f"Error retrieving response: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        })
 
 if __name__ == '__main__':
     # Local version (comment out for production)
