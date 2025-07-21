@@ -2528,7 +2528,7 @@ def ask():
                     }), 499
 
                 response = research_client.chat.completions.create(
-                    model="sonar-pro",
+                    model="sonar-deep-research",
                     messages=messages,
                 )
 
