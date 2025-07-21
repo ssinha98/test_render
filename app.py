@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, make_response, Response, send_file, after_this_request
 from flask_cors import CORS
-from openai import OpenAI
+from openai import OpenAI, InvalidWebhookSignatureError
 from dotenv import load_dotenv
 import os
 import PyPDF2
@@ -2941,41 +2941,54 @@ def start_deep_research():
 @app.route('/api/deep-research-callback', methods=['POST'])
 def deep_research_callback():
     try:
-        # Verify webhook signature using OpenAI client
         webhook_secret = os.getenv('OPENAI_WEBHOOK_SECRET')
-        if not webhook_secret:
-            print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
-            event = request.get_json()
-        else:
-            # Create client with webhook secret for signature verification
-            webhook_client = OpenAI(webhook_secret=webhook_secret)
+        
+        if webhook_secret:
+            # Create a temporary client with webhook secret for verification
+            webhook_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), webhook_secret=webhook_secret)
             try:
                 event = webhook_client.webhooks.unwrap(request.data, request.headers)
-            except Exception as e:
-                print(f"❌ Invalid webhook signature: {e}")
+            except InvalidWebhookSignatureError as e:
+                print("Invalid signature", e)
                 return Response("Invalid signature", status=400)
+        else:
+            print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
+            event = request.get_json()
 
         print("✅ Webhook received from OpenAI:")
-        print(f"Event type: {event.get('type')}")
-        print(f"Event data: {event.get('data')}")
+        print(f"Event type: {event.type}")
+        print(f"Event data: {event.data}")
 
-        # Handle response.completed event
-        if event.get('type') == 'response.completed':
-            response_id = event.get('data', {}).get('id')
-            if response_id:
-                print(f"🎉 Deep research completed for response_id: {response_id}")
-                
-                # Optional: Auto-finalize the result
-                # You could automatically call the finalize logic here
-                # or just log it and let the frontend call finalize_deep_result
-                
+        if event.type == "response.completed":
+            response_id = event.data.id
+            print(f"🎉 Deep research completed for response_id: {response_id}")
+            
+            # Optional: Auto-retrieve and log the response
+            try:
+                response = client.responses.retrieve(response_id)
+                print("Response status:", response.status)
+                # Extract main text like we did in the test
+                main_text = None
+                if hasattr(response, 'output') and response.output:
+                    for item in response.output:
+                        if hasattr(item, 'content'):
+                            for content in item.content:
+                                if hasattr(content, 'text'):
+                                    main_text = content.text
+                                    break
+                            if main_text:
+                                break
+                print("Response text preview:", main_text[:200] + "..." if main_text and len(main_text) > 200 else main_text)
+            except Exception as e:
+                print(f"Error retrieving response: {e}")
+
         # Save webhook event to Firebase for debugging
         from uuid import uuid4
         db.collection("webhook_events").document(str(uuid4())).set({
             "received_at": datetime.utcnow().isoformat(),
-            "event_type": event.get('type'),
-            "response_id": event.get('data', {}).get('id'),
-            "full_event": event
+            "event_type": event.type,
+            "response_id": event.data.id if hasattr(event.data, 'id') else None,
+            "full_event": str(event)  # Convert to string for JSON serialization
         })
 
         return Response(status=200)
