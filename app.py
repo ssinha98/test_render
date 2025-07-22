@@ -32,7 +32,7 @@ matplotlib.use('Agg')  # Add this line at the top
 import threading
 
 load_dotenv()
-print("Loaded SERPAPI_KEY:", os.getenv('SERPAPI_KEY'))
+# print("Loaded SERPAPI_KEY:", os.getenv('SERPAPI_KEY'))
 app = Flask(__name__)
 
 # Configure CORS with more specific settings
@@ -3148,220 +3148,98 @@ def check_status():
         "error_msg": data.get("error_msg")
     })
 
+# ASYNC PERPLEXITY DEEP RESEARCH MODEL: 
+class PerplexityAsyncClient:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://api.perplexity.ai"
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
 
-# OLD STUFF
-# @app.route('/api/deep-research-callback', methods=['POST'])
-# def deep_research_callback():
-#     try:
-#         webhook_secret = os.getenv('OPENAI_WEBHOOK_SECRET')
-        
-#         if webhook_secret:
-#             # Create a temporary client with webhook secret for verification
-#             webhook_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), webhook_secret=webhook_secret)
-#             try:
-#                 event = webhook_client.webhooks.unwrap(request.data, request.headers)
-#             except InvalidWebhookSignatureError as e:
-#                 print("Invalid signature", e)
-#                 return Response("Invalid signature", status=400)
-#         else:
-#             print("⚠️ OPENAI_WEBHOOK_SECRET not set - skipping signature verification")
-#             event = request.get_json()
+    def create_async_job(self, query):
+        payload = {
+            "request": {
+                "model": "sonar-deep-research",
+                "messages": [
+                    {"role": "system", "content": "You are a thorough research assistant."},
+                    {"role": "user", "content": query}
+                ],
+                "reasoning_effort": "medium",
+                "web_search_options": { "search_context_size": "high" },
+                "search_mode": "web"
+            }
+        }
+        res = requests.post(f"{self.base_url}/async/chat/completions", headers=self.headers, json=payload)
+        res.raise_for_status()
+        return res.json()
 
-#         print("✅ Webhook received from OpenAI:")
-#         print(f"Event type: {event.type}")
-#         print(f"Event data: {event.data}")
+    def check_job_status(self, request_id):
+        res = requests.get(f"{self.base_url}/async/chat/completions/{request_id}", headers=self.headers)
+        res.raise_for_status()
+        return res.json()
 
-#         if event.type == "response.completed":
-#             response_id = event.data.id
-#             print(f"🎉 Deep research completed for response_id: {response_id}")
-            
-#             # Optional: Auto-retrieve and log the response
-#             try:
-#                 response = client.responses.retrieve(response_id)
-#                 print("Response status:", response.status)
-#                 # Extract main text like we did in the test
-#                 main_text = None
-#                 if hasattr(response, 'output') and response.output:
-#                     for item in response.output:
-#                         if hasattr(item, 'content'):
-#                             for content in item.content:
-#                                 if hasattr(content, 'text'):
-#                                     main_text = content.text
-#                                     break
-#                             if main_text:
-#                                 break
-#                 print("Response text preview:", main_text[:200] + "..." if main_text and len(main_text) > 200 else main_text)
-#             except Exception as e:
-#                 print(f"Error retrieving response: {e}")
 
-#         # Save webhook event to Firebase for debugging
-#         from uuid import uuid4
-#         db.collection("webhook_events").document(str(uuid4())).set({
-#             "received_at": datetime.utcnow().isoformat(),
-#             "event_type": event.type,
-#             "response_id": event.data.id if hasattr(event.data, 'id') else None,
-#             "full_event": str(event)  # Convert to string for JSON serialization
-#         })
+@app.route("/api/perplexity/start_research", methods=["POST"])
+def start_research():
+    data = request.json
+    query = data["query"]
+    user_id = data["user_id"]
+    block_id = data["block_id"]
+    request_id = data["request_id"]
 
-#         return Response(status=200)
-        
-#     except Exception as e:
-#         print(f"❌ Webhook error: {str(e)}")
-#         return Response(f"Webhook error: {str(e)}", status=500)
+    client = PerplexityAsyncClient(os.getenv("PERPLEXITY_API_KEY"))
+    job_data = client.create_async_job(query)
+    job_id = job_data["id"]
 
-# @app.route('/api/finalize_deep_result', methods=['POST'])
-# def finalize_deep_result():
-#     try:
-#         data = request.json
-#         thread_id = data.get("thread_id")
-#         if not thread_id:
-#             return add_cors_headers(jsonify({
-#                 "success": False,
-#                 "error": "Missing thread_id"
-#             })), 400
+    db.collection("users").document(user_id).collection("deep_research_calls").document(block_id).set({
+        "thread_id": job_id,
+        "status": "processing",
+        "created_at": datetime.utcnow().isoformat(),
+        "user_id": user_id,
+        "request_id": request_id
+    })
 
-#         # Retrieve the result from OpenAI using direct API call
-#         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-#         url = f"https://api.openai.com/v1/responses/{thread_id}"
-#         headers = {
-#             "Authorization": f"Bearer {OPENAI_API_KEY}"
-#         }
-        
-#         api_response = requests.get(url, headers=headers)
-#         try:
-#             response_data = api_response.json()
-#         except Exception:
-#             response_data = {"raw": api_response.text}
+    return jsonify({"success": True, "thread_id": job_id})
 
-#         if api_response.status_code != 200:
-#             return add_cors_headers(jsonify({
-#                 "success": False,
-#                 "error": "Failed to retrieve result from OpenAI",
-#                 "response": response_data
-#             })), 500
 
-#         # Extract main text and URLs from the response
-#         main_text = None
-#         urls = set()
-        
-#         output = response_data.get("output", [])
-#         for item in output:
-#             if item.get("type") == "message" and item.get("role") == "assistant":
-#                 for content in item.get("content", []):
-#                     if content.get("type") == "output_text":
-#                         main_text = content.get("text")
-#                         for ann in content.get("annotations", []):
-#                             if ann.get("type") == "url_citation" and ann.get("url"):
-#                                 urls.add(ann["url"])
-#             elif item.get("type") == "web_search_call":
-#                 url = item.get("action", {}).get("url")
-#                 if url:
-#                     urls.add(url)
+@app.route("/api/perplexity/check_perplexity_status", methods=["POST"])
+def check_perplexity_status():
+    data = request.json
+    user_id = data["user_id"]
+    block_id = data["block_id"]
 
-#         update_data = {
-#             "status": "complete",
-#             "result": response_data,
-#             "result_text": main_text,
-#             "result_urls": list(urls),
-#             "value": main_text,
-#             "completed_at": datetime.utcnow().isoformat()
-#         }
+    doc_ref = db.collection("users").document(user_id).collection("deep_research_calls").document(block_id)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return jsonify({"error": "Not found"}), 404
 
-#         # Update matching document in either collection
-#         updated = False
-#         users_ref = db.collection("users")
-#         for user_doc in users_ref.stream():
-#             user_id = user_doc.id
-#             for coll in ["variables", "deep_research_calls"]:
-#                 col_ref = users_ref.document(user_id).collection(coll)
-#                 for doc in col_ref.stream():
-#                     if doc.to_dict().get("thread_id") == thread_id:
-#                         col_ref.document(doc.id).update(update_data)
-#                         updated = True
+    thread_id = doc.to_dict()["thread_id"]
 
-#         if updated:
-#             return add_cors_headers(jsonify({"success": True}))
-#         else:
-#             return add_cors_headers(jsonify({
-#                 "success": False,
-#                 "error": "thread_id not found"
-#             })), 404
+    client = PerplexityAsyncClient(os.getenv("PERPLEXITY_API_KEY"))
+    status_data = client.check_job_status(thread_id)
+    status = status_data.get("status")
 
-#     except Exception as e:
-#         return add_cors_headers(jsonify({
-#             "success": False,
-#             "error": str(e)
-#         })), 500
-
-# # 3. Fetch Result (GET)
-# @app.route('/api/get_deep_result', methods=['GET'])
-# def get_deep_result():
-#     thread_id = request.args.get("thread_id")
-#     if not thread_id:
-#         return jsonify({"success": False, "error": "Missing thread_id"}), 400
-
-#     users_ref = db.collection("users")
-#     for user_doc in users_ref.stream():
-#         user_id = user_doc.id
-#         # Check variables
-#         vars_ref = users_ref.document(user_id).collection("variables")
-#         for var_doc in vars_ref.stream():
-#             doc = var_doc.to_dict()
-#             if doc.get("thread_id") == thread_id:
-#                 if doc.get("status") == "complete":
-#                     return jsonify({"success": True, "result": doc.get("result")})
-#                 elif doc.get("status") == "error":
-#                     return jsonify({"success": False, "error": doc.get("result")}), 500
-#                 else:
-#                     return jsonify({"success": False, "error": "results aren't ready, check back later"}), 202
-#         # Check deep_research_calls
-#         drc_ref = users_ref.document(user_id).collection("deep_research_calls")
-#         for drc_doc in drc_ref.stream():
-#             doc = drc_doc.to_dict()
-#             if doc.get("thread_id") == thread_id:
-#                 if doc.get("status") == "complete":
-#                     return jsonify({"success": True, "result": doc.get("result")})
-#                 elif doc.get("status") == "error":
-#                     return jsonify({"success": False, "error": doc.get("result")}), 500
-#                 else:
-#                     return jsonify({"success": False, "error": "results aren't ready, check back later"}), 202
-
-#     return jsonify({"success": False, "error": "thread_id not found"}), 404
-
-# @app.route('/test-retrieve-response', methods=['GET'])
-# def test_retrieve_response():
-#     try:
-#         # Use the thread_id from your webhook
-#         response_id = "resp_687eac86ecdc819abbf785f7ce0c110207c6df137d095cc2"
-#         response = client.responses.retrieve(response_id)
-#         print("=== RETRIEVED RESPONSE ===")
-#         print(response)
-        
-#         # Extract the main text like we did before
-#         main_text = None
-#         if hasattr(response, 'output') and response.output:
-#             for item in response.output:
-#                 if hasattr(item, 'content'):
-#                     for content in item.content:
-#                         if hasattr(content, 'text'):
-#                             main_text = content.text
-#                             break
-#                     if main_text:
-#                         break
-        
-#         return jsonify({
-#             "success": True,
-#             "response_id": response.id,
-#             "status": response.status,
-#             "main_text_preview": main_text[:500] + "..." if main_text and len(main_text) > 500 else main_text
-#         })
-        
-#     except Exception as e:
-#         print(f"Error retrieving response: {e}")
-#         return jsonify({
-#             "success": False,
-#             "error": str(e)
-#         })
+    if status == "COMPLETED":
+        response = status_data.get("response", {})
+        content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        doc_ref.update({
+            "status": "complete",
+            "updated_at": datetime.utcnow().isoformat(),
+            "value": content,
+            "full_response": response
+        })
+        return jsonify({"status": "complete", "value": content})
+    elif status == "FAILED":
+        doc_ref.update({
+            "status": "error",
+            "updated_at": datetime.utcnow().isoformat(),
+            "error_msg": status_data.get("error_message", "Unknown error")
+        })
+        return jsonify({"status": "error", "error_msg": status_data.get("error_message")})
+    else:
+        return jsonify({"status": "processing"})
 
 if __name__ == '__main__':
     # Local version (comment out for production)
