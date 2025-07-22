@@ -3143,8 +3143,8 @@ def check_status():
     return jsonify({
         "success": True,
         "status": data.get("status"),
-        "value": data.get("value"),
-        "result_urls": data.get("result_urls"),
+        "summary": data.get("summary") or data.get("value"),  # Fallback for backward compatibility
+        "links": data.get("links", []),
         "error_msg": data.get("error_msg")
     })
 
@@ -3224,13 +3224,25 @@ def check_perplexity_status():
     if status == "COMPLETED":
         response = status_data.get("response", {})
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        
+        # Extract links using regex
+        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        links = list(set(re.findall(url_pattern, content)))
+        
+        # Store the raw response and structured data separately
         doc_ref.update({
             "status": "complete",
             "updated_at": datetime.utcnow().isoformat(),
-            "value": content,
-            "full_response": response
+            "summary": content,  # The main summary text
+            "links": links,      # List of extracted links
+            "raw_response": response  # Store the complete raw response
         })
-        return jsonify({"status": "complete", "value": content})
+        
+        return jsonify({
+            "status": "complete", 
+            "summary": content,
+            "links": links
+        })
     elif status == "FAILED":
         doc_ref.update({
             "status": "error",
