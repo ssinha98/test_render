@@ -2528,8 +2528,8 @@ def ask():
                     }), 499
 
                 response = research_client.chat.completions.create(
-                    # model="sonar-deep-research",
-                    model="sonar-pro",
+                    model="sonar-deep-research",
+                    # model="sonar-pro",
                     messages=messages,
                 )
 
@@ -2861,81 +2861,6 @@ def test_responses():
             "error": str(e)
         })), 500
 
-# --- Deep Research Async Integration ---
-
-# OLD STUFF
-# 1. Start Deep Research (POST)
-# @app.route('/api/start_deep_research', methods=['POST', 'OPTIONS'])
-# def start_deep_research():
-#     if request.method == "OPTIONS":
-#         return add_cors_headers(make_response()), 204
-
-#     try:
-#         data = request.json
-#         prompt = data.get('prompt')
-#         user_id = data.get('user_id')
-#         request_id = data.get('request_id')
-#         variable = data.get('variable')
-
-#         if not prompt or not user_id or not request_id:
-#             return add_cors_headers(jsonify({
-#                 "success": False,
-#                 "error": "Missing required fields: 'prompt', 'user_id', 'request_id'"
-#             })), 400
-
-#         # Make request to OpenAI Deep Research API
-#         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-#         url = "https://api.openai.com/v1/responses"
-#         headers = {
-#             "Content-Type": "application/json",
-#             "Authorization": f"Bearer {OPENAI_API_KEY}"
-#         }
-#         payload = {
-#             "model": "o3-deep-research",
-#             "input": prompt,
-#             "tools": [
-#                 { "type": "web_search_preview" }
-#             ],
-#             "background": True,
-#         }
-
-#         api_response = requests.post(url, headers=headers, json=payload)
-#         try:
-#             response_data = api_response.json()
-#         except Exception:
-#             response_data = {"raw": api_response.text}
-
-#         thread_id = response_data.get("id") or response_data.get("thread_id")
-#         if not thread_id:
-#             return add_cors_headers(jsonify({
-#                 "success": False,
-#                 "error": "No thread_id returned from OpenAI",
-#                 "response": response_data
-#             })), 500
-
-#         # Save to Firebase
-#         doc_data = {
-#             "thread_id": thread_id,
-#             "status": "in_progress",
-#             "created_at": datetime.utcnow().isoformat(),
-#             "prompt": prompt
-#         }
-
-#         if variable:
-#             db.collection("users").document(user_id).collection("variables").document(variable).set(doc_data)
-#         else:
-#             db.collection("users").document(user_id).collection("deep_research_calls").document(request_id).set(doc_data)
-
-#         return add_cors_headers(jsonify({
-#             "success": True,
-#             "thread_id": thread_id
-#         }))
-
-#     except Exception as e:
-#         return add_cors_headers(jsonify({
-#             "success": False,
-#             "error": str(e)
-#         })), 500
 
 # ✅ Updated `/api/start_deep_research`
 @app.route('/api/start_deep_research', methods=['POST', 'OPTIONS'])
@@ -3114,7 +3039,8 @@ def finalize_deep_result():
             "result_urls": sorted(urls),
             "status": "complete",
             "updated_at": datetime.utcnow().isoformat(),
-            "completed_at": datetime.utcnow().isoformat()
+            "completed_at": datetime.utcnow().isoformat(),
+            "search_engine": "openai"
         }
 
         doc_ref.update(update_data)
@@ -3210,39 +3136,63 @@ def check_perplexity_status():
     user_id = data["user_id"]
     block_id = data["block_id"]
 
+    # Get reference to the deep research call document
     doc_ref = db.collection("users").document(user_id).collection("deep_research_calls").document(block_id)
     doc = doc_ref.get()
     if not doc.exists:
         return jsonify({"error": "Not found"}), 404
 
-    thread_id = doc.to_dict()["thread_id"]
+    thread_id = doc.to_dict().get("thread_id")
+    if not thread_id:
+        return jsonify({"error": "Missing thread_id"}), 400
 
+    # Query Perplexity API for job status
     client = PerplexityAsyncClient(os.getenv("PERPLEXITY_API_KEY"))
     status_data = client.check_job_status(thread_id)
     status = status_data.get("status")
 
     if status == "COMPLETED":
         response = status_data.get("response", {})
+
+        # 🔍 Debug logs
+        print("\n=== RAW RESPONSE ===")
+        print(response)
+
+        # Extract main summary text
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        
-        # Extract links using regex
-        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-        links = list(set(re.findall(url_pattern, content)))
-        
-        # Store the raw response and structured data separately
+
+        # Extract and debug citations
+        raw_citations = response.get("citations", [])
+        print("\n=== RAW CITATIONS ===")
+        print(raw_citations)
+
+        citations = []
+        for c in raw_citations:
+            if isinstance(c, dict):
+                title = c.get("title")
+                url = c.get("url")
+                if title and url:
+                    citations.append({"title": title, "url": url})
+            elif isinstance(c, str):
+                # 🔁 Fix: it's actually a URL, not a title
+                citations.append({"title": None, "url": c})
+
+        # Update Firestore with parsed + raw data
         doc_ref.update({
             "status": "complete",
             "updated_at": datetime.utcnow().isoformat(),
-            "summary": content,  # The main summary text
-            "links": links,      # List of extracted links
-            "raw_response": response  # Store the complete raw response
-        })
-        
-        return jsonify({
-            "status": "complete", 
             "summary": content,
-            "links": links
+            "citations": citations,
+            "search_engine": "perplexity_sonar_deep_research",
+            "raw_response": response
         })
+
+        return jsonify({
+            "status": "complete",
+            "summary": content,
+            "citations": citations
+        })
+
     elif status == "FAILED":
         doc_ref.update({
             "status": "error",
@@ -3250,8 +3200,59 @@ def check_perplexity_status():
             "error_msg": status_data.get("error_message", "Unknown error")
         })
         return jsonify({"status": "error", "error_msg": status_data.get("error_message")})
+
     else:
+        # Still processing — no updates to Firestore yet
         return jsonify({"status": "processing"})
+
+# @app.route("/api/perplexity/check_perplexity_status", methods=["POST"])
+# def check_perplexity_status():
+#     data = request.json
+#     user_id = data["user_id"]
+#     block_id = data["block_id"]
+
+#     doc_ref = db.collection("users").document(user_id).collection("deep_research_calls").document(block_id)
+#     doc = doc_ref.get()
+#     if not doc.exists:
+#         return jsonify({"error": "Not found"}), 404
+
+#     thread_id = doc.to_dict()["thread_id"]
+
+#     client = PerplexityAsyncClient(os.getenv("PERPLEXITY_API_KEY"))
+#     status_data = client.check_job_status(thread_id)
+#     status = status_data.get("status")
+
+#     if status == "COMPLETED":
+#         response = status_data.get("response", {})
+#         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        
+#         # Extract links using regex
+#         url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+#         links = list(set(re.findall(url_pattern, content)))
+        
+#         # Store the raw response and structured data separately
+#         doc_ref.update({
+#             "status": "complete",
+#             "updated_at": datetime.utcnow().isoformat(),
+#             "summary": content,  # The main summary text
+#             "links": links,      # List of extracted links
+#             "raw_response": response  # Store the complete raw response
+#         })
+        
+#         return jsonify({
+#             "status": "complete", 
+#             "summary": content,
+#             "links": links
+#         })
+#     elif status == "FAILED":
+#         doc_ref.update({
+#             "status": "error",
+#             "updated_at": datetime.utcnow().isoformat(),
+#             "error_msg": status_data.get("error_message", "Unknown error")
+#         })
+#         return jsonify({"status": "error", "error_msg": status_data.get("error_message")})
+#     else:
+#         return jsonify({"status": "processing"})
 
 if __name__ == '__main__':
     # Local version (comment out for production)
