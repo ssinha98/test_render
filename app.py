@@ -1,3 +1,4 @@
+from typing import Any
 from flask import Flask, request, jsonify, make_response, Response, send_file, after_this_request
 from flask_cors import CORS
 from openai import OpenAI, InvalidWebhookSignatureError
@@ -5,7 +6,8 @@ from dotenv import load_dotenv
 import os
 import PyPDF2
 from PIL import Image
-import io 
+import io
+from io import StringIO
 import base64
 import pandas as pd
 import csv
@@ -3205,54 +3207,269 @@ def check_perplexity_status():
         # Still processing — no updates to Firestore yet
         return jsonify({"status": "processing"})
 
-# @app.route("/api/perplexity/check_perplexity_status", methods=["POST"])
-# def check_perplexity_status():
-#     data = request.json
-#     user_id = data["user_id"]
-#     block_id = data["block_id"]
+def validate_slide(slide: dict[str, Any]) -> tuple[bool, list[str]]:
+    errors = []
 
-#     doc_ref = db.collection("users").document(user_id).collection("deep_research_calls").document(block_id)
-#     doc = doc_ref.get()
-#     if not doc.exists:
-#         return jsonify({"error": "Not found"}), 404
+    if 'backgroundColor' not in slide:
+        errors.append("Missing 'backgroundColor' field")
 
-#     thread_id = doc.to_dict()["thread_id"]
+    if 'elements' not in slide or not isinstance(slide['elements'], list):
+        errors.append("Missing or invalid 'elements' list")
+        return False, errors
 
-#     client = PerplexityAsyncClient(os.getenv("PERPLEXITY_API_KEY"))
-#     status_data = client.check_job_status(thread_id)
-#     status = status_data.get("status")
+    for i, el in enumerate(slide['elements']):
+        if 'type' not in el:
+            errors.append(f"Element {i} missing 'type'")
+        if el['type'] == 'text':
+            if 'text' not in el:
+                errors.append(f"Text element {i} missing 'text'")
+        if el['type'] == 'image':
+            if 'src' not in el:
+                errors.append(f"Image element {i} missing 'src'")
 
-#     if status == "COMPLETED":
-#         response = status_data.get("response", {})
-#         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        for field in ['x', 'y']:
+            if field not in el or not isinstance(el[field], (int, float)):
+                errors.append(f"Element {i} missing or invalid '{field}'")
+
+    return len(errors) == 0, errors
+
+# ------------------- Flask Endpoints -------------------
+
+@app.route('/generate_slide', methods=['POST'])
+def generate_slide():
+    data = request.json
+    # Simulated generation logic — replace with real LLM call
+    prompt = data.get("prompt", "")
+    draft_slide = {
+        "backgroundColor": "#e0f7fa",
+        "elements": [
+            {"type": "text", "text": prompt, "x": 100, "y": 100, "fontSize": 24, "fill": "#000"}
+        ]
+    }
+    return jsonify({"slide": draft_slide})
+
+@app.route('/validate_slide', methods=['POST'])
+def validate_slide_endpoint():
+    slide = request.json.get("slide")
+    if not slide:
+        return jsonify({"valid": False, "errors": ["Missing 'slide' in request"]}), 400
+
+    is_valid, errors = validate_slide(slide)
+    return jsonify({"valid": is_valid, "errors": errors})
+
+@app.route('/correct_slide', methods=['POST'])
+def correct_slide():
+    slide = request.json.get("slide")
+    if not slide:
+        return jsonify({"error": "Missing 'slide' in request"}), 400
+
+    # Example minimal correction logic
+    if 'backgroundColor' not in slide:
+        slide['backgroundColor'] = "#ffffff"
+
+    for el in slide.get("elements", []):
+        el.setdefault("x", 0)
+        el.setdefault("y", 0)
+        if el['type'] == 'text':
+            el.setdefault("text", "")
+            el.setdefault("fontSize", 24)
+            el.setdefault("fill", "#000")
+        if el['type'] == 'image':
+            el.setdefault("src", "https://via.placeholder.com/150")
+            el.setdefault("width", 150)
+            el.setdefault("height", 150)
+
+    return jsonify({"corrected_slide": slide})
+
+@app.route("/api/edit_slide", methods=["POST"])
+def edit_slide():
+    data = request.json
+    original_slide = data.get("slide")
+    instruction = data.get("instruction")
+
+    if not original_slide or not instruction:
+        result = {"error": "Missing slide or instruction"}
+        print("edit_slide return:", result)
+        return jsonify(result), 400
+
+    # Call LLM with original_slide + instruction
+    prompt = f"""
+You are an assistant that edits slide JSON objects. Here is the current slide:
+
+{json.dumps(original_slide, indent=2)}
+
+Apply the following instruction: "{instruction}"
+
+Return the updated slide JSON.
+"""
+    system_prompt = """ 
+        You are a helpful assistant that edits slide JSON objects for a slide editing web app.
+
+You will receive:
+- A JSON object representing the current slide (`slide`)
+- A text instruction from the user (`instruction`)
+
+Your job:
+1. Modify the given slide JSON **in place**, based only on the instruction.
+2. Do not create a new slide from scratch — update existing elements or add new ones if requested.
+3. Maintain the existing structure. Only update `backgroundColor`, `text`, `fontSize`, `fill`, image `src`, coordinates (`x`, `y`), or add/remove elements if explicitly instructed.
+4. All positions (`x`, `y`) should be in pixel values within a 960x540 canvas.
+5. Return a clean JSON object with the updated slide under the key `"updated_slide"`.
+
+Example Input:
+slide = {
+  "backgroundColor": "#f0f0ff",
+  "elements": [
+    {
+      "id": "text1",
+      "type": "text",
+      "text": "Welcome to Solari",
+      "width": 300,
+      "height": 100,
+      "x": 100,
+      "y": 80,
+      "fontSize": 36,
+      "fill": "#333"
+    }
+  ]
+}
+instruction = "Change the background to blue and make the text bold and red"
+
+Expected Output:
+{
+  "updated_slide": {
+    "backgroundColor": "#0000ff",
+    "elements": [
+      {
+        "id": "text1",
+        "type": "text",
+        "text": "Welcome to Solari",
+        "x": 100,
+        "y": 80,
+        "width": 300,
+        "height": 100,
+        "fontSize": 36,
+        "fill": "#ff0000"
+      }
+    ]
+  }
+}
+
+Do not explain your changes. Just return the updated_slide JSON.
+    """
+
+    llm_response = call_model(user_prompt=prompt, system_prompt=system_prompt)
+    response_text = llm_response.get("response") if isinstance(llm_response, dict) else llm_response
+
+    try:
+        parsed = json.loads(response_text)
+        result = {"updated_slide": parsed.get("updated_slide")}
+        print("edit_slide return:", result)
+        return jsonify(result)
+    except Exception as e:
+        result = {"error": "Failed to parse LLM response", "raw": response_text}
+        print("edit_slide return:", result)
+        return jsonify(result), 500
+
+    # try:
+    #     parsed = json.loads(llm_response)
+    #     return jsonify({"updated_slide": parsed})
+    # except Exception as e:
+    #     return jsonify({"error": "Failed to parse LLM response", "raw": llm_response}), 500
+
+@app.route('/api/parse-csv-for-table', methods=['POST', 'OPTIONS'])
+def parse_csv_for_table():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    data = request.json
+    request_id = data.get('request_id')
+    file_url = data.get('file_url')
+    
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    
+    if not file_url:
+        return add_cors_headers(jsonify({'error': 'file_url is required'})), 400
+    
+    register_request(request_id)
+    
+    try:
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
         
-#         # Extract links using regex
-#         url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-#         links = list(set(re.findall(url_pattern, content)))
+        print(f"Processing CSV from URL: {file_url}")
         
-#         # Store the raw response and structured data separately
-#         doc_ref.update({
-#             "status": "complete",
-#             "updated_at": datetime.utcnow().isoformat(),
-#             "summary": content,  # The main summary text
-#             "links": links,      # List of extracted links
-#             "raw_response": response  # Store the complete raw response
-#         })
+        # Download CSV from URL with timeout and size limit
+        response = requests.get(file_url, timeout=30, stream=True)
+        response.raise_for_status()
         
-#         return jsonify({
-#             "status": "complete", 
-#             "summary": content,
-#             "links": links
-#         })
-#     elif status == "FAILED":
-#         doc_ref.update({
-#             "status": "error",
-#             "updated_at": datetime.utcnow().isoformat(),
-#             "error_msg": status_data.get("error_message", "Unknown error")
-#         })
-#         return jsonify({"status": "error", "error_msg": status_data.get("error_message")})
-#     else:
-#         return jsonify({"status": "processing"})
+        # Check content length (50MB limit)
+        content_length = response.headers.get('content-length')
+        if content_length and int(content_length) > 50 * 1024 * 1024:  # 50MB
+            return add_cors_headers(jsonify({
+                'success': False,
+                'error': 'File too large. Maximum size is 50MB.'
+            })), 400
+        
+        # Read CSV content
+        csv_content = response.text
+        
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        
+        # Parse CSV using pandas
+        df = pd.read_csv(StringIO(csv_content))
+        
+        # Convert to list of dictionaries
+        rows = df.to_dict('records')
+        
+        # Get column names
+        columns = list(df.columns)
+        
+        # Clean the data - handle empty cells, NaN values, etc.
+        cleaned_rows = []
+        for row in rows:
+            cleaned_row = {}
+            for col in columns:
+                value = row[col]
+                # Convert NaN, None, etc. to empty string
+                if pd.isna(value) or value is None:
+                    cleaned_row[col] = ""
+                else:
+                    cleaned_row[col] = str(value).strip()
+            cleaned_rows.append(cleaned_row)
+        
+        # Prepare response
+        result = {
+            'success': True,
+            'data': {
+                'columns': columns,
+                'rows': cleaned_rows,
+                'total_rows': len(cleaned_rows),
+                'file_name': file_url.split('/')[-1].split('?')[0]  # Extract filename from URL
+            }
+        }
+        
+        print(f"Successfully parsed CSV: {len(cleaned_rows)} rows, {len(columns)} columns")
+        return add_cors_headers(jsonify(result))
+        
+    except requests.RequestException as e:
+        print(f"Error downloading file: {e}")
+        return add_cors_headers(jsonify({
+            'success': False,
+            'error': f'Failed to download file: {str(e)}'
+        })), 400
+        
+    except Exception as e:
+        print(f"Error parsing CSV: {e}")
+        return add_cors_headers(jsonify({
+            'success': False,
+            'error': f'Failed to parse CSV: {str(e)}'
+        })), 500
+        
+    finally:
+        cleanup_request(request_id)
 
 if __name__ == '__main__':
     # Local version (comment out for production)
