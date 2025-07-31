@@ -3471,6 +3471,224 @@ def parse_csv_for_table():
     finally:
         cleanup_request(request_id)
 
+def dedupe_table(df: pd.DataFrame, columns: list):
+    """Deduplicate table based on multiple columns"""
+    # Create normalized columns for comparison
+    df_copy = df.copy()
+    for col in columns:
+        df_copy[f"_norm_{col}"] = df_copy[col].str.strip().str.lower()
+    
+    # Drop duplicates based on all normalized columns
+    df_deduped = df_copy.drop_duplicates(subset=[f"_norm_{col}" for col in columns], keep="first")
+    
+    # Remove the temporary normalized columns
+    return df_deduped.drop(columns=[f"_norm_{col}" for col in columns])
+
+def filter_table(df: pd.DataFrame, column: str, operator: str, value: str):
+    """Filter table based on column, operator, and value"""
+    series = df[column].astype(str)  # ensure string ops
+    if operator == "equals":
+        mask = series.str.strip().str.lower() == value.strip().lower()
+    elif operator == "contains":
+        mask = series.str.contains(value, case=False, na=False)
+    elif operator == "starts_with":
+        mask = series.str.strip().str.lower().str.startswith(value.strip().lower())
+    elif operator == "ends_with":
+        mask = series.str.strip().str.lower().str.endswith(value.strip().lower())
+    else:
+        raise ValueError(f"Unsupported operator: {operator}")
+    return df[mask]
+
+@app.route('/api/table-transform', methods=['POST', 'OPTIONS'])
+def table_transform():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    data = request.json
+    request_id = data.get('request_id')
+    user_id = data.get('user_id')
+    table_id = data.get('table_id')
+    operation = data.get('operation')
+    params = data.get('params', {})
+    save_mode = data.get('save_mode', 'overwrite')
+    new_table_name = data.get('new_table_name')
+    agent_id = data.get('agent_id')  # Add this back
+    
+    # Validate required fields
+    if not request_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: request_id'})), 400
+    
+    if not user_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: user_id'})), 400
+    
+    if not table_id:
+        return add_cors_headers(jsonify({'error': 'Missing required field: table_id'})), 400
+    
+    if not operation:
+        return add_cors_headers(jsonify({'error': 'Missing required field: operation'})), 400
+    
+    if not agent_id:  # Add this validation back
+        return add_cors_headers(jsonify({'error': 'Missing required field: agent_id'})), 400
+
+    register_request(request_id)
+    
+    try:
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        
+        # Get table from Firebase
+        table_ref = db.collection("users").document(user_id).collection("variables").document(table_id)
+        table_doc = table_ref.get()
+        
+        if not table_doc.exists:
+            return add_cors_headers(jsonify({
+                'status': 'failed',
+                'error': f'Table with id {table_id} not found'
+            })), 404
+        
+        table_data = table_doc.to_dict()
+        
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(table_data.get("value", []))
+        
+        if df.empty:
+            return add_cors_headers(jsonify({
+                'status': 'failed',
+                'error': 'Table is empty'
+            })), 400
+        
+        original_count = len(df)
+        df_new = df.copy()
+        
+        # Apply transformation based on operation
+        if operation == "dedupe":
+            subset_columns = params.get("subset_columns")  # Changed from subset_column to subset_columns
+            if not subset_columns:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': 'Missing required parameter: subset_columns'
+                })), 400
+            
+            # Handle both single column (string) and multiple columns (list)
+            if isinstance(subset_columns, str):
+                subset_columns = [subset_columns]
+            elif not isinstance(subset_columns, list):
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': 'subset_columns must be a string or list of strings'
+                })), 400
+            
+            # Check if all columns exist
+            missing_columns = [col for col in subset_columns if col not in df.columns]
+            if missing_columns:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': f'Columns not found in table: {", ".join(missing_columns)}'
+                })), 400
+            
+            df_new = dedupe_table(df, subset_columns)
+            
+        elif operation == "filter":
+            column = params.get("column")
+            operator = params.get("operator")
+            value = params.get("value")
+            
+            if not column:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': 'Missing required parameter: column'
+                })), 400
+            
+            if not operator:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': 'Missing required parameter: operator'
+                })), 400
+            
+            if value is None:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': 'Missing required parameter: value'
+                })), 400
+            
+            if column not in df.columns:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': f'Column "{column}" not found in table'
+                })), 400
+            
+            try:
+                df_new = filter_table(df, column, operator, value)
+            except ValueError as e:
+                return add_cors_headers(jsonify({
+                    'status': 'failed',
+                    'error': str(e)
+                })), 400
+        else:
+            return add_cors_headers(jsonify({
+                'status': 'failed',
+                'error': f'Unsupported operation: {operation}'
+            })), 400
+        
+        if is_request_cancelled(request_id):
+            return add_cors_headers(jsonify({'error': 'Request was cancelled', 'cancelled': True, 'success': False})), 499
+        
+        # Convert back to records
+        updated_value = df_new.to_dict(orient="records")
+        rows_affected = original_count - len(df_new)
+        current_time = datetime.utcnow().isoformat()  # Add this back
+        
+        # Save based on save_mode
+        if save_mode == "overwrite":
+            table_ref.update({
+                "value": updated_value,
+                "updated_at": current_time,
+                "agent_id": agent_id
+            })
+            return add_cors_headers(jsonify({
+                "status": "success",
+                "rows_affected": rows_affected
+            }))
+        
+        elif save_mode == "new":
+            # Generate new variable ID
+            new_variable_id = db.collection("users").document(user_id).collection("variables").document().id
+            
+            new_ref = db.collection("users").document(user_id).collection("variables").document(new_variable_id)
+            new_ref.set({
+                "columns": table_data.get("columns", list(df_new.columns)),
+                "value": updated_value,
+                "name": new_table_name or f"{table_data.get('name', 'table')}_{operation}",
+                "type": "table",
+                "variable_id": new_variable_id,
+                "agent_id": agent_id,
+                "updated_at": current_time
+            })
+            return add_cors_headers(jsonify({
+                "status": "success",
+                "new_table_id": new_variable_id,
+                "rows_affected": rows_affected
+            }))
+        
+        else:
+            return add_cors_headers(jsonify({
+                'status': 'failed',
+                'error': f'Unsupported save_mode: {save_mode}'
+            })), 400
+        
+    except Exception as e:
+        print(f"Error in table_transform: {e}")
+        return add_cors_headers(jsonify({
+            'status': 'failed',
+            'error': f'Internal server error: {str(e)}'
+        })), 500
+        
+    finally:
+        cleanup_request(request_id)
+
 if __name__ == '__main__':
     # Local version (comment out for production)
     # app.run(debug=False, port=5000, host='0.0.0.0')
