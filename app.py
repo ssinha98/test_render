@@ -2582,6 +2582,7 @@ def scrape():
         return jsonify({"error": "Missing 'request_id' in request body"}), 400
 
     print(f"Received scrape request with request_id: {request_id}")
+    print(f"DEBUG - Full request data: {data}")  # Print the full request data
     register_request(request_id)
     try:
         # Check for cancellation before starting
@@ -2600,6 +2601,9 @@ def scrape():
 
         url = data["url"]
         prompt = data.get("prompt")  # Optional parameter
+        
+        print(f"DEBUG - URL to scrape: {url}")  # Print the URL being scraped
+        print(f"DEBUG - Prompt (if any): {prompt}")  # Print the prompt if provided
 
         # === Blocked URL logic ===
         BLOCKED_DOMAINS = ["x.com", "youtube.com", "cnbc.com"]
@@ -2628,8 +2632,12 @@ def scrape():
             }), 499
 
         try:
+            print(f"DEBUG - Calling firecrawl_client.scrape_url with URL: {url}")  # Print before firecrawl call
             scrape_result = scrape_website(url)
+            print(f"DEBUG - Firecrawl response length: {len(scrape_result) if scrape_result else 0}")  # Print response length
+            print(f"DEBUG - Firecrawl response preview: {scrape_result[:500] if scrape_result else 'None'}...")  # Print first 500 chars
         except Exception as e:
+            print(f"DEBUG - Firecrawl error: {str(e)}")  # Print any firecrawl errors
             return jsonify({"error": str(e)}), 500
 
         # Check for cancellation after scraping
@@ -2641,6 +2649,7 @@ def scrape():
             }), 499
 
         if not prompt:
+            print(f"DEBUG - Returning scrape result without analysis")  # Print when returning without analysis
             return jsonify(scrape_result)
 
         # If prompt exists, analyze the content
@@ -2660,6 +2669,8 @@ def scrape():
             },
         ]
 
+        print(f"DEBUG - Sending to LLM for analysis with prompt: {prompt}")  # Print LLM analysis info
+
         # Check for cancellation before LLM analysis
         if is_request_cancelled(request_id):
             return jsonify({
@@ -2674,7 +2685,9 @@ def scrape():
                 messages=messages,
                 timeout=30
             )
+            print(f"DEBUG - LLM analysis completed successfully")  # Print LLM success
         except Exception as e:
+            print(f"DEBUG - LLM analysis error: {str(e)}")  # Print LLM errors
             return jsonify({"error": str(e)}), 500
 
         # Check for cancellation after LLM analysis
@@ -2685,6 +2698,7 @@ def scrape():
                 "cancelled": True
             }), 499
 
+        print(f"DEBUG - Returning final result with analysis")  # Print final return
         return jsonify({
             "markdown": scrape_result,
             "analysis": response.choices[0].message.content
@@ -3688,6 +3702,42 @@ def table_transform():
         
     finally:
         cleanup_request(request_id)
+
+@app.route('/api/send-completion-email', methods=['POST', 'OPTIONS'])
+def send_completion_email():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        agent_name = data.get('agentName')
+        agent_link = data.get('agentLink')
+        
+        if not all([email, agent_name, agent_link]):
+            return add_cors_headers(jsonify({'success': False, 'error': 'Missing required parameters: email, agentName, and agentLink'})), 400
+        
+        subject = f"{agent_name} has completed its run and has tasks for you"
+        body = f"{agent_name} has completed its run and has tasks for you. Check it out here: {agent_link}"
+        
+        # Use the existing send_email function
+        response = send_email(email, subject, body)
+        
+        if response and response.status_code == 200:
+            return add_cors_headers(jsonify({
+                'success': True, 
+                'sent_to': email,
+                'message': 'Completion email sent successfully'
+            }))
+        else:
+            return add_cors_headers(jsonify({
+                'success': False, 
+                'error': 'Failed to send completion email',
+                'status_code': response.status_code if response else None
+            })), 500
+        
+    except Exception as e:
+        return add_cors_headers(jsonify({'success': False, 'error': str(e)})), 500
 
 if __name__ == '__main__':
     # Local version (comment out for production)
