@@ -1,0 +1,201 @@
+{
+    "requestId": "req_dummy_transcripts_001",
+    "records": {
+      "totalRecords": 10,
+      "currentPageSize": 10,
+      "currentPageNumber": 0,
+      "cursor": "eyJhbGciOiJIUzI1NiJ9.dummy_transcripts_cursor"
+    },
+    "callTranscripts": [
+      {
+        "callId": "call_2001",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1001",
+            "topic": "Introductions",
+            "sentences": [
+              { "start": 1000, "end": 1200, "text": "Hi everyone, thanks for joining the Acme demo today." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_001",
+            "topic": "Pricing",
+            "sentences": [
+              { "start": 1800, "end": 2100, "text": "Can you walk us through the different pricing tiers?" }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2002",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1002",
+            "topic": "Quarterly Review",
+            "sentences": [
+              { "start": 500, "end": 800, "text": "Let's review last quarter's numbers and see where we landed." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_002",
+            "topic": "Expansion",
+            "sentences": [
+              { "start": 1600, "end": 1800, "text": "We’re looking at expanding licenses across two new regions." }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2003",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1003",
+            "topic": "Intro Call",
+            "sentences": [
+              { "start": 600, "end": 700, "text": "This is just a quick introduction to our solution." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_003",
+            "topic": "Objections",
+            "sentences": [
+              { "start": 1200, "end": 1350, "text": "We already use a competitor tool; what makes you different?" }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2004",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1004",
+            "topic": "Security",
+            "sentences": [
+              { "start": 300, "end": 500, "text": "We’re SOC2 and ISO certified, and can share documentation." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_004",
+            "topic": "Follow-up",
+            "sentences": [
+              { "start": 2000, "end": 2100, "text": "Please send over the security appendix for our legal team." }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2005",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1005",
+            "topic": "Contract",
+            "sentences": [
+              { "start": 400, "end": 600, "text": "Here’s the current draft of the agreement for review." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_005",
+            "topic": "Legal Review",
+            "sentences": [
+              { "start": 1500, "end": 1650, "text": "Our legal team will need changes to the liability clause." }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2006",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1006",
+            "topic": "Pitch",
+            "sentences": [
+              { "start": 200, "end": 400, "text": "This new feature will help reduce onboarding time by 50%." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_006",
+            "topic": "Expansion",
+            "sentences": [
+              { "start": 1200, "end": 1400, "text": "Could we add 50 more seats in the APAC region?" }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2007",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1003",
+            "topic": "Customer Success",
+            "sentences": [
+              { "start": 100, "end": 300, "text": "I wanted to check how your rollout has gone so far." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_007",
+            "topic": "Feedback",
+            "sentences": [
+              { "start": 800, "end": 1000, "text": "Overall positive, but we’d like more reporting dashboards." }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2008",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1007",
+            "topic": "Prospecting",
+            "sentences": [
+              { "start": 150, "end": 300, "text": "We help enterprises improve sales productivity with insights." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_008",
+            "topic": "Objections",
+            "sentences": [
+              { "start": 600, "end": 700, "text": "We already have an analytics vendor in place." }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2009",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1008",
+            "topic": "Renewal",
+            "sentences": [
+              { "start": 250, "end": 400, "text": "Let’s look at your renewal options for the upcoming year." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_009",
+            "topic": "Budget",
+            "sentences": [
+              { "start": 1000, "end": 1150, "text": "Our budget is tighter, can we consider a shorter term?" }
+            ]
+          }
+        ]
+      },
+      {
+        "callId": "call_2010",
+        "transcript": [
+          {
+            "speakerId": "spk_usr_1010",
+            "topic": "Kickoff",
+            "sentences": [
+              { "start": 100, "end": 200, "text": "Welcome to the kickoff, today we’ll align on milestones." }
+            ]
+          },
+          {
+            "speakerId": "spk_client_010",
+            "topic": "Timeline",
+            "sentences": [
+              { "start": 800, "end": 950, "text": "What’s the expected delivery date for phase one?" }
+            ]
+          }
+        ]
+      }
+    ]
+  }

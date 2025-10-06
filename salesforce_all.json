@@ -1,0 +1,179 @@
+{
+    "sosl_index": [
+      { "name": "Acme Corp", "accountId": "0015g00000ABCDeAAH" },
+      { "name": "Globex", "accountId": "0015g00000FGHIjAAH" },
+      { "name": "Wayne Enterprises", "accountId": "0015g00000WAYNEaAAH" }
+    ],
+    "accounts": {
+      "0015g00000ABCDeAAH": {
+        "attributes": { "type": "Account", "url": "/services/data/v61.0/sobjects/Account/0015g00000ABCDeAAH" },
+        "Id": "0015g00000ABCDeAAH",
+        "Name": "Acme Corp",
+        "Industry": "Retail",
+        "BillingCity": "New York",
+        "OwnerId": "0055g00000XYZuvAAH",
+        "CreatedDate": "2025-08-15T11:32:41.000+0000",
+        "Website": "https://www.acme.example"
+      },
+      "0015g00000FGHIjAAH": {
+        "attributes": { "type": "Account", "url": "/services/data/v61.0/sobjects/Account/0015g00000FGHIjAAH" },
+        "Id": "0015g00000FGHIjAAH",
+        "Name": "Globex",
+        "Industry": "Software",
+        "BillingCity": "San Francisco",
+        "OwnerId": "0055g00000XYZuvAAH",
+        "CreatedDate": "2024-05-09T09:10:11.000+0000",
+        "Website": "https://www.globex.example"
+      },
+      "0015g00000WAYNEaAAH": {
+        "attributes": { "type": "Account", "url": "/services/data/v61.0/sobjects/Account/0015g00000WAYNEaAAH" },
+        "Id": "0015g00000WAYNEaAAH",
+        "Name": "Wayne Enterprises",
+        "Industry": "Manufacturing",
+        "BillingCity": "Gotham",
+        "OwnerId": "0055g00000XYZuvAAH",
+        "CreatedDate": "2023-11-02T12:00:00.000+0000",
+        "Website": "https://www.wayne.example"
+      }
+    },
+    "contacts": {
+      "0015g00000ABCDeAAH": [
+        {
+          "attributes": { "type": "Contact", "url": "/services/data/v61.0/sobjects/Contact/0035g00000JKLmNAA1" },
+          "Id": "0035g00000JKLmNAA1",
+          "FirstName": "Maya",
+          "LastName": "Patel",
+          "Title": "VP Operations",
+          "Email": "maya.patel@acme.example",
+          "Phone": "+1-555-0100",
+          "AccountId": "0015g00000ABCDeAAH"
+        },
+        {
+          "attributes": { "type": "Contact", "url": "/services/data/v61.0/sobjects/Contact/0035g00000JKLmPAA2" },
+          "Id": "0035g00000JKLmPAA2",
+          "FirstName": "Arjun",
+          "LastName": "Mehta",
+          "Title": "Procurement Lead",
+          "Email": "arjun.mehta@acme.example",
+          "Phone": "+1-555-0101",
+          "AccountId": "0015g00000ABCDeAAH"
+        }
+      ],
+      "0015g00000FGHIjAAH": [
+        {
+          "attributes": { "type": "Contact", "url": "/services/data/v61.0/sobjects/Contact/0035g00000GLOBExAA1" },
+          "Id": "0035g00000GLOBExAA1",
+          "FirstName": "Dana",
+          "LastName": "Chu",
+          "Title": "Director of IT",
+          "Email": "dana.chu@globex.example",
+          "Phone": "+1-555-0200",
+          "AccountId": "0015g00000FGHIjAAH"
+        }
+      ],
+      "0015g00000WAYNEaAAH": [
+        {
+          "attributes": { "type": "Contact", "url": "/services/data/v61.0/sobjects/Contact/0035g00000WAYNEcAA1" },
+          "Id": "0035g00000WAYNEcAA1",
+          "FirstName": "Lucius",
+          "LastName": "Fox",
+          "Title": "CTO",
+          "Email": "lucius.fox@wayne.example",
+          "Phone": "+1-555-0300",
+          "AccountId": "0015g00000WAYNEaAAH"
+        }
+      ]
+    },
+    "opportunities": {
+      "0015g00000ABCDeAAH": [
+        {
+          "attributes": { "type": "Opportunity", "url": "/services/data/v61.0/sobjects/Opportunity/0065g00000OPPaaAAH" },
+          "Id": "0065g00000OPPaaAAH",
+          "Name": "FY25 Platform Renewal - Acme Corp",
+          "StageName": "Negotiation/Review",
+          "Amount": 185000.0,
+          "CloseDate": "2025-09-30",
+          "AccountId": "0015g00000ABCDeAAH",
+          "OwnerId": "0055g00000XYZuvAAH"
+        },
+        {
+          "attributes": { "type": "Opportunity", "url": "/services/data/v61.0/sobjects/Opportunity/0065g00000OPPbbAAH" },
+          "Id": "0065g00000OPPbbAAH",
+          "Name": "Security Add-on - Acme Corp",
+          "StageName": "Proposal/Price Quote",
+          "Amount": 45000.0,
+          "CloseDate": "2025-10-15",
+          "AccountId": "0015g00000ABCDeAAH",
+          "OwnerId": "0055g00000XYZuvAAH"
+        }
+      ],
+      "0015g00000FGHIjAAH": [
+        {
+          "attributes": { "type": "Opportunity", "url": "/services/data/v61.0/sobjects/Opportunity/0065g00000GLOBExAA1" },
+          "Id": "0065g00000GLOBExAA1",
+          "Name": "Globex Expansion",
+          "StageName": "Value Proposition",
+          "Amount": 120000.0,
+          "CloseDate": "2025-11-20",
+          "AccountId": "0015g00000FGHIjAAH",
+          "OwnerId": "0055g00000XYZuvAAH"
+        }
+      ],
+      "0015g00000WAYNEaAAH": [
+        {
+          "attributes": { "type": "Opportunity", "url": "/services/data/v61.0/sobjects/Opportunity/0065g00000WAYNEoAA1" },
+          "Id": "0065g00000WAYNEoAA1",
+          "Name": "Pilot Rollout - Wayne Enterprises",
+          "StageName": "Discovery",
+          "Amount": 90000.0,
+          "CloseDate": "2025-12-10",
+          "AccountId": "0015g00000WAYNEaAAH",
+          "OwnerId": "0055g00000XYZuvAAH"
+        }
+      ]
+    },
+    "cases": {
+      "0015g00000ABCDeAAH": [
+        {
+          "attributes": { "type": "Case", "url": "/services/data/v61.0/sobjects/Case/5005g00000CASEaaAAH" },
+          "Id": "5005g00000CASEaaAAH",
+          "CaseNumber": "00012345",
+          "Subject": "Security Questionnaire",
+          "Status": "In Progress",
+          "Priority": "High",
+          "AccountId": "0015g00000ABCDeAAH"
+        },
+        {
+          "attributes": { "type": "Case", "url": "/services/data/v61.0/sobjects/Case/5005g00000CASEbbAAH" },
+          "Id": "5005g00000CASEbbAAH",
+          "CaseNumber": "00012388",
+          "Subject": "Billing Clarification",
+          "Status": "New",
+          "Priority": "Medium",
+          "AccountId": "0015g00000ABCDeAAH"
+        }
+      ],
+      "0015g00000FGHIjAAH": [
+        {
+          "attributes": { "type": "Case", "url": "/services/data/v61.0/sobjects/Case/5005g00000GLOBExAA1" },
+          "Id": "5005g00000GLOBExAA1",
+          "CaseNumber": "00022311",
+          "Subject": "SLA question",
+          "Status": "Escalated",
+          "Priority": "High",
+          "AccountId": "0015g00000FGHIjAAH"
+        }
+      ],
+      "0015g00000WAYNEaAAH": [
+        {
+          "attributes": { "type": "Case", "url": "/services/data/v61.0/sobjects/Case/5005g00000WAYNEcAA1" },
+          "Id": "5005g00000WAYNEcAA1",
+          "CaseNumber": "00033001",
+          "Subject": "Pilot environment access",
+          "Status": "In Progress",
+          "Priority": "High",
+          "AccountId": "0015g00000WAYNEaAAH"
+        }
+      ]
+    }
+  }

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional, Dict
 from flask import Flask, request, jsonify, make_response, Response, send_file, after_this_request
 from flask_cors import CORS
 from openai import OpenAI, InvalidWebhookSignatureError
@@ -25,6 +25,7 @@ import contextlib
 import traceback
 import time
 from urllib.parse import urlparse
+from pathlib import Path
 # from instagrapi import Client
 import base64
 from io import BytesIO
@@ -2458,6 +2459,312 @@ def visual_agent():
 #     locations = filtered.to_dict(orient="records")
 #     return jsonify({"locations": locations})
 
+# GONG MOCK ENDPOINTS
+GONG_USERS_FILE = Path("./gong_all_users.json")
+GONG_CALLS_FILE = Path("./gong_all_calls.json")
+GONG_TRANSCRIPTS_FILE = Path("./gong_all_transcripts.json")
+
+# JIRA MOCK ENDPOINTS
+JIRA_ALL_FILE = Path("./jira_all.json")
+
+# SALESFORCE MOCK ENDPOINTS
+SF_ALL_FILE = Path("./salesforce_all.json")
+
+def _load_json(path: Path):
+    if not path.exists():
+        return add_cors_headers(jsonify({"error": f"Fixture not found: {path}"})), 404
+    try:
+        return json.loads(path.read_text())
+    except Exception as e:
+        return add_cors_headers(jsonify({"error": f"Failed to parse {path}: {e}"})), 500
+
+@app.route("/gong/users", methods=['GET', 'OPTIONS'])
+def gong_users():
+    """
+    Optional query params:
+      - page (int, default 0)
+      - page_size (int, default 10, max 100)
+      - q (str): fuzzy match on name/title/email
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    page = int(request.args.get("page", 0))
+    page_size = max(1, min(int(request.args.get("page_size", 10)), 100))
+    q = (request.args.get("q") or "").strip().lower()
+
+    data = _load_json(GONG_USERS_FILE)
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    users = data.get("users") or data.get("data", {}).get("users") or []
+
+    if q:
+        def match(u):
+            name = f"{u.get('firstName','')} {u.get('lastName','')}".lower()
+            title = (u.get("title") or "").lower()
+            email = (u.get("emailAddress") or "").lower()
+            return q in name or q in title or q in email
+        users = [u for u in users if match(u)]
+
+    start = page * page_size
+    page_items = users[start:start+page_size]
+    cursor = f"cursor_users_{page+1}" if start + page_size < len(users) else None
+
+    return add_cors_headers(jsonify({
+        "success": True,
+        "requestId": "req_mock_users",
+        "records": {
+            "totalRecords": len(users),
+            "currentPageSize": len(page_items),
+            "currentPageNumber": page,
+            "cursor": cursor
+        },
+        "users": page_items
+    }))
+
+@app.route("/gong/calls", methods=['GET', 'OPTIONS'])
+def gong_calls():
+    """
+    Optional query params:
+      - page (int, default 0)
+      - page_size (int, default 10, max 100)
+      - clientUniqueId (str): filter; e.g., usr_1001
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    page = int(request.args.get("page", 0))
+    page_size = max(1, min(int(request.args.get("page_size", 10)), 100))
+    client_unique_id = request.args.get("clientUniqueId")
+
+    data = _load_json(GONG_CALLS_FILE)
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    calls = data.get("calls") or data.get("data", {}).get("calls") or []
+
+    if client_unique_id:
+        calls = [c for c in calls if c.get("clientUniqueId") == client_unique_id]
+
+    start = page * page_size
+    page_items = calls[start:start+page_size]
+    cursor = f"cursor_calls_{page+1}" if start + page_size < len(calls) else None
+
+    return add_cors_headers(jsonify({
+        "success": True,
+        "requestId": "req_mock_calls",
+        "records": {
+            "totalRecords": len(calls),
+            "currentPageSize": len(page_items),
+            "currentPageNumber": page,
+            "cursor": cursor
+        },
+        "calls": page_items
+    }))
+
+@app.route("/gong/transcripts", methods=['GET', 'OPTIONS'])
+def gong_transcripts():
+    """
+    Query params:
+      - callId (repeatable): /gong/transcripts?callId=call_2001&callId=call_2004
+        If none provided, returns all transcripts.
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    call_ids = request.args.getlist("callId")
+
+    data = _load_json(GONG_TRANSCRIPTS_FILE)
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    transcripts = data.get("callTranscripts") or data.get("data", {}).get("callTranscripts") or []
+
+    if call_ids:
+        wanted = set(call_ids)
+        transcripts = [ct for ct in transcripts if ct.get("callId") in wanted]
+
+    return add_cors_headers(jsonify({
+        "success": True,
+        "requestId": "req_mock_transcripts",
+        "records": {
+            "totalRecords": len(transcripts),
+            "currentPageSize": len(transcripts),
+            "currentPageNumber": 0,
+            "cursor": None
+        },
+        "callTranscripts": transcripts
+    }))
+
+@app.route("/jira/search", methods=['GET', 'OPTIONS'])
+def jira_search():
+    """
+    Mimics Jira /rest/api/3/search using a single combined issues file.
+    Query params:
+      - company (optional): filters by fields.customfield_Company or fields.organizations[].name
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    company = (request.args.get("company") or "").strip().lower()
+
+    data = _load_json(JIRA_ALL_FILE)
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    issues = data.get("issues", [])
+
+    if company:
+        def match_company(issue):
+            fields = issue.get("fields", {})
+            cf = (fields.get("customfield_Company") or "").lower()
+            orgs = [o.get("name","").lower() for o in fields.get("organizations", [])]
+            return cf == company or company in orgs
+        issues = [i for i in issues if match_company(i)]
+
+    # Shape like Jira's search response
+    return add_cors_headers(jsonify({
+        "success": True,
+        "isLast": True,
+        "issues": issues
+    }))
+
+def _sf_load():
+    if not SF_ALL_FILE.exists():
+        return add_cors_headers(jsonify({"error": f"Fixture not found: {SF_ALL_FILE}"})), 404
+    try:
+        return json.loads(SF_ALL_FILE.read_text())
+    except Exception as e:
+        return add_cors_headers(jsonify({"error": f"Failed to parse {SF_ALL_FILE}: {e}"})), 500
+
+@app.route("/salesforce/search", methods=['GET', 'OPTIONS'])
+def sf_search():
+    """
+    SOSL-like company search.
+    Query params:
+      - name (required): exact, case-insensitive match on Account name
+    Returns: array of Account records (simplified SOSL feel)
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    name = request.args.get("name")
+    if not name:
+        return add_cors_headers(jsonify({"error": "Missing required query param: name"})), 400
+
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    hits = [i for i in data.get("sosl_index", []) if i["name"].lower() == name.lower()]
+    accounts = []
+    for h in hits:
+        acc = data.get("accounts", {}).get(h["accountId"])
+        if acc:
+            accounts.append(acc)
+    return add_cors_headers(jsonify({
+        "success": True,
+        "data": accounts
+    }))
+
+@app.route("/salesforce/accounts/<account_id>", methods=['GET', 'OPTIONS'])
+def sf_account(account_id):
+    """
+    SOQL-like: return a single Account wrapped in { totalSize, done, records }
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    acc = data.get("accounts", {}).get(account_id)
+    if not acc:
+        return add_cors_headers(jsonify({"error": "Account not found"})), 404
+    return add_cors_headers(jsonify({
+        "success": True,
+        "totalSize": 1, 
+        "done": True, 
+        "records": [acc]
+    }))
+
+@app.route("/salesforce/contacts", methods=['GET', 'OPTIONS'])
+def sf_contacts():
+    """
+    SOQL-like: contacts by AccountId
+    Query params: accountId (required)
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    account_id = request.args.get("accountId")
+    if not account_id:
+        return add_cors_headers(jsonify({"error": "Missing accountId"})), 400
+    
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    recs = data.get("contacts", {}).get(account_id, [])
+    return add_cors_headers(jsonify({
+        "success": True,
+        "totalSize": len(recs), 
+        "done": True, 
+        "records": recs
+    }))
+
+@app.route("/salesforce/opportunities", methods=['GET', 'OPTIONS'])
+def sf_opportunities():
+    """
+    SOQL-like: opportunities by AccountId
+    Query params: accountId (required)
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    account_id = request.args.get("accountId")
+    if not account_id:
+        return add_cors_headers(jsonify({"error": "Missing accountId"})), 400
+    
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    recs = data.get("opportunities", {}).get(account_id, [])
+    return add_cors_headers(jsonify({
+        "success": True,
+        "totalSize": len(recs), 
+        "done": True, 
+        "records": recs
+    }))
+
+@app.route("/salesforce/cases", methods=['GET', 'OPTIONS'])
+def sf_cases():
+    """
+    SOQL-like: cases by AccountId
+    Query params: accountId (required)
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    account_id = request.args.get("accountId")
+    if not account_id:
+        return add_cors_headers(jsonify({"error": "Missing accountId"})), 400
+    
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    recs = data.get("cases", {}).get(account_id, [])
+    return add_cors_headers(jsonify({
+        "success": True,
+        "totalSize": len(recs), 
+        "done": True, 
+        "records": recs
+    }))
+
 @app.route('/', defaults={'path': ''}, methods=['GET', 'OPTIONS'])
 @app.route('/<path:path>', methods=['GET', 'OPTIONS'])
 def catch_all(path):
@@ -3738,6 +4045,258 @@ def send_completion_email():
         
     except Exception as e:
         return add_cors_headers(jsonify({'success': False, 'error': str(e)})), 500
+
+@app.route("/salesforce/query-all", methods=['GET', 'OPTIONS'])
+def sf_query_all():
+    """
+    Combined endpoint that takes a company name and returns all related data.
+    Query params: 
+      - company (required): Company name to search for
+    Returns: Complete company data including account, contacts, opportunities, and cases
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    company = request.args.get("company")
+    if not company:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": "Missing required query param: company"
+        })), 400
+    
+    # Load Salesforce data
+    data = _sf_load()
+    if isinstance(data, tuple):  # Error response
+        return data
+    
+    # Search for company in the SOSL index
+    company_lower = company.strip().lower()
+    hits = [i for i in data.get("sosl_index", []) if i["name"].lower() == company_lower]
+    
+    if not hits:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": f"No company found with name: {company}"
+        })), 404
+    
+    # Get the first match (assuming unique company names)
+    account_id = hits[0]["accountId"]
+    
+    # Fetch account data
+    account = data.get("accounts", {}).get(account_id)
+    if not account:
+        return add_cors_headers(jsonify({
+            "success": False,
+            "error": "Account data not found"
+        })), 404
+    
+    # Fetch related data
+    contacts = data.get("contacts", {}).get(account_id, [])
+    opportunities = data.get("opportunities", {}).get(account_id, [])
+    cases = data.get("cases", {}).get(account_id, [])
+    
+    # Build comprehensive response
+    response_data = {
+        "success": True,
+        "company": {
+            "name": company,
+            "accountId": account_id,
+            "account": account,
+            "summary": {
+                "totalContacts": len(contacts),
+                "totalOpportunities": len(opportunities),
+                "totalCases": len(cases)
+            }
+        },
+        "contacts": {
+            "totalSize": len(contacts),
+            "done": True,
+            "records": contacts
+        },
+        "opportunities": {
+            "totalSize": len(opportunities),
+            "done": True,
+            "records": opportunities
+        },
+        "cases": {
+            "totalSize": len(cases),
+            "done": True,
+            "records": cases
+        }
+    }
+    
+    return add_cors_headers(jsonify(response_data))
+
+def get_agent_variables_safe(agent_id: str, user_id: str, main_output_only: bool = False, referenced_variables: list = None) -> Optional[Dict[str, Any]]:
+    """
+    Safely get variables for a specific agent ID with filtering options
+    """
+    try:
+        db = firestore.client()
+        
+        # Query variables
+        variables_ref = db.collection(f'users/{user_id}/variables')
+        query = variables_ref.where('agentId', '==', agent_id)
+        docs = query.stream()
+        
+        agent_variables = {}
+        
+        for doc in docs:
+            try:
+                variable_data = doc.to_dict()
+                variable_name = variable_data.get('name')
+                variable_value = variable_data.get('value')
+                main_output = variable_data.get('mainOutput', False)
+                
+                if not variable_name:
+                    continue
+                
+                # Filter logic
+                should_include = False
+                
+                if main_output_only and main_output:
+                    # Include if mainOutput is true
+                    should_include = True
+                elif referenced_variables and variable_name in referenced_variables:
+                    # Include if referenced in the question
+                    should_include = True
+                
+                if should_include:
+                    agent_variables[variable_name] = variable_value
+                    
+            except Exception as e:
+                print(f"Error processing variable {doc.id}: {e}")
+                continue
+        
+        return agent_variables
+        
+    except Exception as e:
+        print(f"Error fetching variables for agent {agent_id}: {e}")
+        return None
+
+def extract_referenced_variables(message: str) -> list:
+    """
+    Extract @variable_name references from a message
+    """
+    import re
+    pattern = r'@(\w+)'
+    matches = re.findall(pattern, message)
+    return matches
+
+@app.route('/api/ask_output', methods=['POST', 'OPTIONS'])
+def ask_output():
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    try:
+        data = request.get_json()
+        
+        # Extract parameters
+        agent_id = data.get('agentId')
+        question = data.get('question')
+        user_id = data.get('userId')
+        
+        # Debug: Print received parameters
+        print(f"\n=== ASK_OUTPUT DEBUG ===")
+        print(f"Received parameters:")
+        print(f"  agentId: {agent_id}")
+        print(f"  question: {question}")
+        print(f"  userId: {user_id}")
+        
+        # Validate required parameters
+        if not agent_id:
+            return add_cors_headers(jsonify({
+                'error': 'agentId is required'
+            })), 400
+            
+        if not question:
+            return add_cors_headers(jsonify({
+                'error': 'question is required'
+            })), 400
+            
+        if not user_id:
+            return add_cors_headers(jsonify({
+                'error': 'userId is required'
+            })), 400
+        
+        # Extract referenced variables from the question
+        referenced_vars = extract_referenced_variables(question)
+        print(f"Referenced variables in question: {referenced_vars}")
+        
+        # 1. Get main output variables by default
+        main_variables = get_agent_variables_safe(agent_id, user_id, main_output_only=True)
+        print(f"Main output variables: {main_variables}")
+        
+        # 2. Get referenced variables if any
+        referenced_variables = {}
+        if referenced_vars:
+            referenced_variables = get_agent_variables_safe(agent_id, user_id, main_output_only=False, referenced_variables=referenced_vars)
+            print(f"Referenced variables: {referenced_variables}")
+        
+        # Combine both sets of variables
+        agent_variables = {**main_variables, **referenced_variables}
+        
+        # Debug: Print final variables
+        print(f"Final combined variables:")
+        print(f"  Variables: {agent_variables}")
+        print(f"  Number of variables: {len(agent_variables) if agent_variables else 0}")
+        
+        if not agent_variables:
+            print("WARNING: No variables found")
+            agent_variables = {"message": "No relevant data available"}
+        
+        # 3. Create system prompt with variable data
+        SYSTEM_PROMPT = (
+            "You are a precise assistant for customer-facing agents.\n"
+            "Answer the user's question using ONLY the context below.\n"
+            "If the context does not contain a good answer, say:\n"
+            "\"We don't have that information in the current data.\"\n\n"
+            "=== CONTEXT START ===\n"
+            f"{json.dumps(agent_variables, indent=2)}\n"
+            "=== CONTEXT END ==="
+        )
+        
+        # Debug: Print system prompt
+        print(f"System prompt:")
+        print(f"  {SYSTEM_PROMPT}")
+        print(f"=== END DEBUG ===\n")
+        
+        # Initialize OpenAI client
+        client = OpenAI(api_key=get_active_api_key())
+        
+        # Call OpenAI with system prompt and user question
+        response = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user", 
+                    "content": question
+                }
+            ],
+            model="gpt-4",
+        )
+        
+        # Debug: Print OpenAI response
+        print(f"OpenAI response: {response.choices[0].message.content}")
+        
+        # 5. Return response with success: true, response: response
+        result = {
+            "success": True,
+            "response": response.choices[0].message.content
+        }
+        
+        response_obj = make_response(jsonify(result))
+        response_obj.set_cookie('session_active', 'true')
+        return add_cors_headers(response_obj)
+        
+    except Exception as e:
+        print(f"ERROR in ask_output: {str(e)}")
+        return add_cors_headers(jsonify({
+            'error': f'An error occurred: {str(e)}'
+        })), 500
 
 if __name__ == '__main__':
     # Local version (comment out for production)
