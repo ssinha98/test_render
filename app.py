@@ -83,10 +83,6 @@ api_key = os.getenv('OPENAI_API_KEY')
 if not api_key:
     raise ValueError("OPENAI_API_KEY not found in environment variables")
 
-# Reset counter on application start
-api_call_count = 0
-user_api_key = None
-MAX_FREE_CALLS = 3
 
 # Initialize Firebase
 try:
@@ -142,18 +138,6 @@ if not firecrawl_api_key:
 
 firecrawl_client = FirecrawlApp(api_key=firecrawl_api_key)
 
-def get_active_api_key():
-    """Returns user API key if set, otherwise falls back to env key"""
-    global user_api_key
-    return user_api_key if user_api_key else os.getenv('OPENAI_API_KEY')
-
-def check_api_key_usage():
-    """Tracks API usage and returns whether user needs their own key"""
-    global api_call_count
-    api_call_count += 1
-    if api_call_count > 3 and not user_api_key:
-        return False
-    return True
 
 # Code for handling files
 UPLOAD_FOLDER = 'uploads'
@@ -214,27 +198,11 @@ def upload_file():
     finally:
         cleanup_request(request_id)
 
-@app.route('/api/set-api-key', methods=['POST', 'OPTIONS'])
-def set_api_key():
-    if request.method == "OPTIONS":
-        return add_cors_headers(make_response()), 204
-    global user_api_key
-    data = request.json
-    user_api_key = data.get('api_key')
-    response = jsonify({"success": True})
-    return add_cors_headers(response)
 
 def call_model(system_prompt: str, user_prompt: str, sources: dict = None) -> dict:
     """Sends prompts to OpenAI and returns the response"""
     try:
-        if not check_api_key_usage():
-            return {
-                "response": "Please add your own API key to continue using the service.",
-                "success": False,
-                "needs_api_key": True
-            }
-
-        client = OpenAI(api_key=get_active_api_key())
+        client = OpenAI(api_key=api_key)
         # Prepare context from sources
         context = ""
         if sources:
@@ -384,33 +352,6 @@ def oai_route():
     finally:
         cleanup_request(request_id)
 
-@app.route('/api/check-api-key', methods=['GET', 'OPTIONS'])
-def check_api_key():
-    if request.method == "OPTIONS":
-        return add_cors_headers(make_response()), 204
-    global user_api_key, api_call_count
-    response = jsonify({
-        'hasCustomKey': bool(user_api_key),
-        'apiKey': user_api_key if user_api_key else '',
-        'count': api_call_count
-    })
-    return add_cors_headers(response)
-
-@app.route('/api/remove-api-key', methods=['POST', 'OPTIONS'])
-def remove_api_key():
-    if request.method == "OPTIONS":
-        return add_cors_headers(make_response()), 204
-    global user_api_key, api_call_count
-    user_api_key = None
-    api_call_count = 0
-    return add_cors_headers(jsonify({'success': True}))
-
-@app.route('/api/get-count', methods=['GET', 'OPTIONS'])
-def get_count():
-    if request.method == "OPTIONS":
-        return add_cors_headers(make_response()), 204
-    global api_call_count
-    return add_cors_headers(jsonify({'count': api_call_count}))
 
 
 @app.route('/api/process-csv', methods=['POST', 'OPTIONS'])
@@ -4262,7 +4203,7 @@ def ask_output():
         print(f"=== END DEBUG ===\n")
         
         # Initialize OpenAI client
-        client = OpenAI(api_key=get_active_api_key())
+        client = OpenAI(api_key=api_key)
         
         # Call OpenAI with system prompt and user question
         response = client.chat.completions.create(
