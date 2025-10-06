@@ -4160,7 +4160,12 @@ def ask_output():
                 'error': 'userId is required'
             })), 400
         
-        # Extract referenced variables from the question
+        # Replace @nickname references with actual file content
+        processed_question = replace_nickname_references(question, user_id)
+        print(f"Original question: {question}")
+        print(f"Processed question: {processed_question}")
+        
+        # Extract referenced variables from the original question (for backward compatibility)
         referenced_vars = extract_referenced_variables(question)
         print(f"Referenced variables in question: {referenced_vars}")
         
@@ -4205,7 +4210,7 @@ def ask_output():
         # Initialize OpenAI client
         client = OpenAI(api_key=api_key)
         
-        # Call OpenAI with system prompt and user question
+        # Call OpenAI with system prompt and PROCESSED user question
         response = client.chat.completions.create(
             messages=[
                 {
@@ -4214,7 +4219,7 @@ def ask_output():
                 },
                 {
                     "role": "user", 
-                    "content": question
+                    "content": processed_question  # Use the processed question with @nickname replaced
                 }
             ],
             model="gpt-4",
@@ -4238,6 +4243,72 @@ def ask_output():
         return add_cors_headers(jsonify({
             'error': f'An error occurred: {str(e)}'
         })), 500
+
+def get_file_by_nickname(user_id: str, nickname: str) -> Optional[Dict[str, Any]]:
+    """
+    Get file data by nickname from the files collection
+    """
+    try:
+        db = firestore.client()
+        files_ref = db.collection(f'users/{user_id}/files')
+        docs = files_ref.stream()
+        
+        for doc in docs:
+            file_data = doc.to_dict()
+            if file_data.get('nickname') == nickname:
+                return file_data
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error fetching file by nickname {nickname}: {e}")
+        return None
+
+def get_file_content(file_data: Dict[str, Any]) -> str:
+    """
+    Extract content from file data based on file type
+    """
+    file_type = file_data.get('file_type', '')
+    
+    if file_type == 'website':
+        # For websites, we could load the chunks/embeddings and return relevant content
+        # For now, return basic info
+        return f"Website: {file_data.get('full_name', 'Unknown')} - {file_data.get('nickname', 'No nickname')}"
+    
+    elif file_type == 'excel':
+        return f"Excel file: {file_data.get('full_name', 'Unknown')} - {file_data.get('nickname', 'No nickname')}"
+    
+    elif file_type == 'image':
+        return f"Generated plot: {file_data.get('full_name', 'Unknown')} - {file_data.get('nickname', 'No nickname')}"
+    
+    else:
+        return f"File: {file_data.get('full_name', 'Unknown')} - {file_data.get('nickname', 'No nickname')}"
+
+def replace_nickname_references(message: str, user_id: str) -> str:
+    """
+    Replace @nickname references with actual file content
+    """
+    import re
+    
+    # Find all @nickname references
+    pattern = r'@(\w+)'
+    matches = re.findall(pattern, message)
+    
+    if not matches:
+        return message
+    
+    # Replace each @nickname with file content
+    result = message
+    for nickname in matches:
+        file_data = get_file_by_nickname(user_id, nickname)
+        if file_data:
+            content = get_file_content(file_data)
+            result = result.replace(f'@{nickname}', content)
+        else:
+            # If file not found, leave the @nickname as is (might be a variable)
+            pass
+    
+    return result
 
 if __name__ == '__main__':
     # Local version (comment out for production)
