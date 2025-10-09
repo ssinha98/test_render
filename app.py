@@ -33,6 +33,7 @@ import math
 import matplotlib
 matplotlib.use('Agg')  # Add this line at the top
 import threading
+from requests.auth import HTTPBasicAuth
 
 load_dotenv()
 # print("Loaded SERPAPI_KEY:", os.getenv('SERPAPI_KEY'))
@@ -2538,39 +2539,6 @@ def gong_transcripts():
         "callTranscripts": transcripts
     }))
 
-@app.route("/jira/search", methods=['GET', 'OPTIONS'])
-def jira_search():
-    """
-    Mimics Jira /rest/api/3/search using a single combined issues file.
-    Query params:
-      - company (optional): filters by fields.customfield_Company or fields.organizations[].name
-    """
-    if request.method == "OPTIONS":
-        return add_cors_headers(make_response()), 204
-    
-    company = (request.args.get("company") or "").strip().lower()
-
-    data = _load_json(JIRA_ALL_FILE)
-    if isinstance(data, tuple):  # Error response
-        return data
-    
-    issues = data.get("issues", [])
-
-    if company:
-        def match_company(issue):
-            fields = issue.get("fields", {})
-            cf = (fields.get("customfield_Company") or "").lower()
-            orgs = [o.get("name","").lower() for o in fields.get("organizations", [])]
-            return cf == company or company in orgs
-        issues = [i for i in issues if match_company(i)]
-
-    # Shape like Jira's search response
-    return add_cors_headers(jsonify({
-        "success": True,
-        "isLast": True,
-        "issues": issues
-    }))
-
 def _sf_load():
     if not SF_ALL_FILE.exists():
         return add_cors_headers(jsonify({"error": f"Fixture not found: {SF_ALL_FILE}"})), 404
@@ -4309,6 +4277,368 @@ def replace_nickname_references(message: str, user_id: str) -> str:
             pass
     
     return result
+
+def get_jira_credentials_from_firebase(user_id):
+    """
+    Fetches JIRA credentials from Firebase for a specific user.
+    
+    Args:
+        user_id (str): The user's Firebase UID
+        
+    Returns:
+        dict: Dictionary containing api_key, email, and customer_url
+        None: If user not found or credentials missing
+    """
+    try:
+        print(f"[DEBUG] Looking up user: {user_id}")
+        
+        # Get user document from Firebase
+        user_ref = db.collection("users").document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
+            print(f"[ERROR] User {user_id} not found in Firebase")
+            return None
+            
+        user_data = user_doc.to_dict()
+        print(f"[DEBUG] User data keys: {list(user_data.keys())}")
+        
+        # Extract the required fields
+        api_key = user_data.get('JIRA_API_KEY')
+        email = user_data.get('email')
+        jira_domain = user_data.get('JIRA_Domain')
+        
+        print(f"[DEBUG] JIRA_API_KEY present: {bool(api_key)}")
+        print(f"[DEBUG] email present: {bool(email)}")
+        print(f"[DEBUG] JIRA_Domain present: {bool(jira_domain)}")
+        print(f"[DEBUG] JIRA_Domain value: {jira_domain}")
+        
+        # Validate that all required fields are present
+        if not all([api_key, email, jira_domain]):
+            missing_fields = []
+            if not api_key:
+                missing_fields.append('JIRA_API_KEY')
+            if not email:
+                missing_fields.append('email')
+            if not jira_domain:
+                missing_fields.append('JIRA_Domain')
+            
+            print(f"[ERROR] Missing required fields for user {user_id}: {', '.join(missing_fields)}")
+            return None
+        
+        # Handle different domain formats
+        if jira_domain.startswith('http'):
+            # If it already includes protocol, use as is
+            customer_url = jira_domain.rstrip('/')
+        elif '.atlassian.net' in jira_domain:
+            # If it's already the full domain, just add protocol
+            customer_url = f"https://{jira_domain}"
+        else:
+            # If it's just the subdomain, add the full domain
+            customer_url = f"https://{jira_domain}.atlassian.net"
+        
+        print(f"[DEBUG] Constructed customer_url: {customer_url}")
+        
+        return {
+            'api_key': api_key,
+            'email': email,
+            'customer_url': customer_url
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Exception in get_jira_credentials_from_firebase: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def get_tickets_by_query(query_string, base_url, headers, auth):
+    """
+    Get tickets based on a search query using the issue picker endpoint.
+    
+    Args:
+        query_string (str): The search query string
+        base_url (str): The JIRA base URL
+        headers (dict): Request headers
+        auth: Authentication object
+        
+    Returns:
+        dict: JSON response containing matching tickets
+    """
+    query_url = base_url + "/rest/api/3/issue/picker"
+    query = {
+        'query': query_string
+    }
+    
+    response = requests.request(
+        "GET",
+        query_url,
+        headers=headers,
+        params=query,
+        auth=auth
+    )
+    
+    return json.loads(response.text)
+
+def get_tickets_by_jql(jql_query, base_url, headers, auth):
+    """
+    Get tickets based on JQL (Jira Query Language).
+    
+    Args:
+        jql_query (str): The JQL query string
+        base_url (str): The JIRA base URL
+        headers (dict): Request headers
+        auth: Authentication object
+        
+    Returns:
+        dict: JSON response containing matching tickets
+    """
+    jql_url = base_url + "/rest/api/3/search/jql"
+    query = {
+        'jql': jql_query
+    }
+    
+    response = requests.request(
+        "GET",
+        jql_url,
+        headers=headers,
+        params=query,
+        auth=auth
+    )
+    
+    return json.loads(response.text)
+
+def get_ticket_by_id(ticket_id, base_url, headers, auth):
+    """
+    Get ticket information based on ticket ID.
+    
+    Args:
+        ticket_id (str): The ticket ID (e.g., "10035")
+        base_url (str): The JIRA base URL
+        headers (dict): Request headers
+        auth: Authentication object
+        
+    Returns:
+        dict: JSON response containing ticket details
+    """
+    id_url = base_url + f"/rest/api/3/issue/{ticket_id}"
+    
+    response = requests.request(
+        "GET",
+        id_url,
+        headers=headers,
+        auth=auth
+    )
+    
+    return json.loads(response.text)
+
+def filter_ticket_fields(ticket_data):
+    """
+    Filter ticket data to only include specified fields.
+    
+    Args:
+        ticket_data: List of ticket dictionaries or single ticket dictionary
+        
+    Returns:
+        Filtered ticket data with only the specified fields
+    """
+    # Fields to keep
+    fields_to_keep = [
+        'assignee', 'attachment', 'comment', 'created', 'creator', 
+        'duedate', 'issuetype', 'priority', 'project', 'status', 
+        'summary', 'subtasks'
+    ]
+    
+    # Top-level fields to keep
+    top_level_fields = ['id', 'key', 'self']
+    
+    def filter_single_ticket(ticket):
+        """Filter a single ticket"""
+        filtered_ticket = {}
+        
+        # Add top-level fields
+        for field in top_level_fields:
+            if field in ticket:
+                filtered_ticket[field] = ticket[field]
+        
+        # Add fields from the 'fields' object
+        if 'fields' in ticket:
+            filtered_ticket['fields'] = {}
+            for field in fields_to_keep:
+                if field in ticket['fields']:
+                    filtered_ticket['fields'][field] = ticket['fields'][field]
+        
+        return filtered_ticket
+    
+    # Handle both single ticket and list of tickets
+    if isinstance(ticket_data, list):
+        return [filter_single_ticket(ticket) for ticket in ticket_data]
+    else:
+        return filter_single_ticket(ticket_data)
+
+def get_filtered_full_ticket_info(search_input, user_id):
+    """
+    Get full ticket information with only the specified fields using Firebase credentials.
+    
+    Args:
+        search_input (str): Either a JQL expression or a search query
+        user_id (str): The user's Firebase UID
+        
+    Returns:
+        dict: Response with success status and filtered data or error
+    """
+    try:
+        # Get credentials from Firebase
+        credentials = get_jira_credentials_from_firebase(user_id)
+        
+        if not credentials:
+            return {
+                'success': False,
+                'error': 'Failed to retrieve JIRA credentials from Firebase'
+            }
+        
+        # Extract credentials
+        base_url = credentials['customer_url']
+        api_key = credentials['api_key']
+        user_email = credentials['email']
+        
+        # Set up authentication and headers
+        auth = HTTPBasicAuth(user_email, api_key)
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        # Detect if input is JQL (contains common JQL keywords) or a simple query
+        jql_keywords = ['project =', 'assignee =', 'status =', 'ORDER BY', 'AND', 'OR', 'IN', 'NOT IN']
+        is_jql = any(keyword in search_input.upper() for keyword in jql_keywords)
+        
+        # Get tickets based on input type
+        if is_jql:
+            print(f"Detected JQL query: {search_input}")
+            tickets_response = get_tickets_by_jql(search_input, base_url, headers, auth)
+            # Extract IDs from JQL response (they're strings in "issues" array)
+            ticket_ids = [issue['id'] for issue in tickets_response.get('issues', [])]
+        else:
+            print(f"Detected search query: {search_input}")
+            tickets_response = get_tickets_by_query(search_input, base_url, headers, auth)
+            # Extract IDs from query response (they're integers in sections[].issues[])
+            ticket_ids = []
+            for section in tickets_response.get('sections', []):
+                for issue in section.get('issues', []):
+                    ticket_ids.append(str(issue['id']))  # Convert to string for consistency
+        
+        print(f"Found {len(ticket_ids)} tickets: {ticket_ids}")
+        
+        # Get detailed information for each ticket
+        all_ticket_details = []
+        for ticket_id in ticket_ids:
+            try:
+                ticket_details = get_ticket_by_id(ticket_id, base_url, headers, auth)
+                all_ticket_details.append(ticket_details)
+                print(f"Retrieved details for ticket {ticket_id}")
+            except Exception as e:
+                print(f"Error retrieving ticket {ticket_id}: {e}")
+                continue
+        
+        # Filter the fields to only include specified ones
+        filtered_data = filter_ticket_fields(all_ticket_details)
+        
+        return {
+            'success': True,
+            'data': filtered_data,
+            'ticket_count': len(filtered_data),
+            'query_type': 'JQL' if is_jql else 'Search Query'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Request failed: {str(e)}'
+        }
+
+@app.route("/jira/search", methods=["POST", "OPTIONS"])
+def jira_search():
+    """
+    Search JIRA using user's credentials from Firebase and return filtered ticket information
+    
+    Expected JSON payload:
+    {
+        "user_id": "firebase_user_id",
+        "search_input": "project = SCRUM AND priority = High ORDER BY created DESC"  // JQL
+        OR
+        "search_input": "bug fix"  // Simple search query
+    }
+    
+    Returns:
+    {
+        "status": "success" | "failure",
+        "data": [...],  // Filtered ticket data (only on success)
+        "ticket_count": 5,  // Number of tickets found (only on success)
+        "query_type": "JQL" | "Search Query",  // Type of query used (only on success)
+        "error": "Error message"  // Error message (only on failure)
+    }
+    """
+    if request.method == "OPTIONS":
+        return add_cors_headers(make_response()), 204
+    
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        search_input = data.get('search_input')
+        
+        # Validate required parameters
+        if not user_id:
+            return add_cors_headers(jsonify({
+                "status": "failure",
+                "error": "user_id is required"
+            })), 400
+            
+        if not search_input:
+            return add_cors_headers(jsonify({
+                "status": "failure",
+                "error": "search_input is required"
+            })), 400
+        
+        # Get filtered ticket information using Firebase credentials
+        result = get_filtered_full_ticket_info(search_input, user_id)
+        
+        if result['success']:
+            return add_cors_headers(jsonify({
+                "status": "success",
+                "data": result['data'],
+                "ticket_count": result['ticket_count'],
+                "query_type": result['query_type']
+            }))
+        else:
+            return add_cors_headers(jsonify({
+                "status": "failure",
+                "error": result['error']
+            })), 500
+            
+    except Exception as e:
+        return add_cors_headers(jsonify({
+            "status": "failure",
+            "error": f"Internal server error: {str(e)}"
+        })), 500
+
+@app.route("/test-firebase", methods=["GET"])
+def test_firebase():
+    try:
+        # Simple Firebase test
+        test_ref = db.collection("test").document("connection")
+        test_ref.set({"timestamp": "test"})
+        test_doc = test_ref.get()
+        test_ref.delete()  # Clean up
+        
+        return jsonify({
+            "success": True,
+            "message": "Firebase connection working"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Local version (comment out for production)
